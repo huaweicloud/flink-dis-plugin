@@ -17,7 +17,7 @@ The recommended way to use the DIS SDK for DIS Flink Connector in your project i
 #### Specify the SDK Maven dependency
     <dependency>
         <groupId>com.huaweicloud.dis</groupId>
-        <artifactId>huaweicloud-dis-flink-connector</artifactId>
+        <artifactId>huaweicloud-dis-flink-connector_2.11</artifactId>
         <version>1.0.0</version>
         <scope>compile</scope>
     </dependency>
