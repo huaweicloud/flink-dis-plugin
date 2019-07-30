@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <properties>
+        <!--定义变量,亦可以调用系统变量,比如${env:TESTLOG}/test/logs,其中TESTLOG是自己添加的系统环境变量  -->
+        <property name="size">100MB</property>
+        <property name="index">10</property>
+    </properties>
+
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout charset="UTF-8" pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+        </Console>
+        <RollingFile name="RollingFile0" fileName="logs/demolog0.log" filePattern="logs/demolog0-%d{MM-dd-yyyy}-%i.log">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="${size}"/>
+            </Policies>
+            <DefaultRolloverStrategy fileIndex="max" max="${index}"/>
+        </RollingFile>
+        <RollingFile name="RollingFile1" fileName="logs/demolog1.log" filePattern="logs/demolog1-%d{MM-dd-yyyy}-%i.log">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="${size}"/>
+            </Policies>
+            <DefaultRolloverStrategy fileIndex="max" max="${index}"/>
+        </RollingFile>
+        <RollingFile name="RollingFile2" fileName="logs/demolog2.log" filePattern="logs/demolog2-%d{MM-dd-yyyy}-%i.log">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="${size}"/>
+            </Policies>
+            <DefaultRolloverStrategy fileIndex="max" max="${index}"/>
+        </RollingFile>
+        <RollingFile name="RollingFile3" fileName="logs/demolog3.log" filePattern="logs/demolog3-%d{MM-dd-yyyy}-%i.log">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="${size}"/>
+            </Policies>
+            <DefaultRolloverStrategy fileIndex="max" max="${index}"/>
+        </RollingFile>
+        <RollingFile name="RollingFile4" fileName="logs/demolog4.log" filePattern="logs/demolog4-%d{MM-dd-yyyy}-%i.log">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="${size}"/>
+            </Policies>
+            <DefaultRolloverStrategy fileIndex="max" max="${index}"/>
+        </RollingFile>
+
+    </Appenders>
+    <Loggers>
+        <Root level="DEBUG">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="RollingFile0"/>
+        </Root>
+        <logger name="org.apache.http" level="DEBUG" />
+        <logger name="org.apache.http.wire" level="DEBUG" />
+        <logger name="org.apache.http.headers" level="DEBUG" />
+        <logger name="httpclient.wire.header" level="DEBUG" />
+        <logger name="com.obs.services" level="OFF" />
+
+        <!--<logger name="com.huawei.dis.client.consumer.ConsumerDemo" level="INFO">-->
+            <!--<AppenderRef ref="RollingFile0"/>-->
+        <!--</logger>-->
+        <!--<logger name="com.huawei.dis.client.producer" level="INFO">-->
+            <!--<AppenderRef ref="ProducerRollingFile"/>-->
+        <!--</logger>-->
+        
+        <!--<logger name="com.huawei.dis.client.consumer.Statistics" level="INFO">-->
+            <!--<AppenderRef ref="Console"/>-->
+        <!--</logger>-->
+        <logger name="loggen.LogGen0" level="INFO">
+            <AppenderRef ref="RollingFile0"/>
+        </logger>
+        <logger name="loggen.LogGen1" level="INFO">
+            <AppenderRef ref="RollingFile1"/>
+        </logger>
+        <logger name="loggen.LogGen2" level="INFO">
+            <AppenderRef ref="RollingFile2"/>
+        </logger>
+        <logger name="loggen.LogGen3" level="INFO">
+            <AppenderRef ref="RollingFile3"/>
+        </logger>
+        <logger name="loggen.LogGen4" level="INFO">
+            <AppenderRef ref="RollingFile4"/>
+        </logger>
+    </Loggers>
+</Configuration>
