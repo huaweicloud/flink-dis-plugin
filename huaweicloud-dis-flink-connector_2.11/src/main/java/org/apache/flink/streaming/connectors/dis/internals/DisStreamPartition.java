@@ -27,7 +27,7 @@ import java.util.Map;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Flink's description of a partition in a Kafka topic.
+ * Flink's description of a partition in a DIS stream.
  * Serializable, and common across all Kafka consumer subclasses (0.8, 0.9, ...)
  *
  * <p>Note: This class must not change in its structure, because it would change the

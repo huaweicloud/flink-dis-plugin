@@ -100,7 +100,8 @@ public abstract class FlinkDisProducerBase<IN> extends RichSinkFunction<IN> impl
 	/**
 	 * If true, the producer will wait until all outstanding records have been send to the broker.
 	 */
-	protected boolean flushOnCheckpoint = true;
+//	protected boolean flushOnCheckpoint = true;
+	protected boolean flushOnCheckpoint = false;
 
 	// -------------------------------- Runtime fields ------------------------------------------
 

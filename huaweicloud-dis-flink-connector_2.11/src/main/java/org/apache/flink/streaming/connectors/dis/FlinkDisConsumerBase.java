@@ -42,6 +42,7 @@ import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunctio
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.streaming.connectors.dis.config.OffsetCommitMode;
 import org.apache.flink.streaming.connectors.dis.config.OffsetCommitModes;
+import org.apache.flink.streaming.connectors.dis.config.RebalanceMode;
 import org.apache.flink.streaming.connectors.dis.config.StartupMode;
 import org.apache.flink.streaming.connectors.dis.internals.*;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
@@ -138,6 +139,9 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 
 	/** Timestamp to determine startup offsets; only relevant when startup mode is {@link StartupMode#TIMESTAMP}. */
 	private Long startupOffsetsTimestamp;
+
+	/** The ReBalance mode for the partition discoverer (default is {@link RebalanceMode#CLIENT}). */
+	protected RebalanceMode rebalanceMode = RebalanceMode.CLIENT;
 
 	// ------------------------------------------------------------------------
 	//  runtime state (used individually by each parallel subtask)
@@ -429,6 +433,16 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 		this.startupMode = StartupMode.SPECIFIC_OFFSETS;
 		this.startupOffsetsTimestamp = null;
 		this.specificStartupOffsets = checkNotNull(specificStartupOffsets);
+		return this;
+	}
+
+	/**
+	 * Change the ReBalance Mode
+	 * @param rebalanceMode see {@link RebalanceMode}
+	 * @return The consumer object, to allow function chaining.
+	 */
+	public FlinkDisConsumerBase<T> setRebalanceMode(RebalanceMode rebalanceMode) {
+		this.rebalanceMode = rebalanceMode;
 		return this;
 	}
 

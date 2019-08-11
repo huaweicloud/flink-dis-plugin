@@ -33,6 +33,7 @@ import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.streaming.connectors.dis.config.OffsetCommitMode;
+import org.apache.flink.streaming.connectors.dis.config.RebalanceMode;
 import org.apache.flink.streaming.connectors.dis.internals.*;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchemaWrapper;
@@ -347,8 +348,11 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 			DisStreamsDescriptor topicsDescriptor,
 			int indexOfThisSubtask,
 			int numParallelSubtasks) {
-
-		return new DisPartitionDiscoverer(topicsDescriptor, indexOfThisSubtask, numParallelSubtasks, properties);
+        if (this.rebalanceMode == RebalanceMode.CLIENT) {
+            return new DisPartitionDiscovererLocal(topicsDescriptor, indexOfThisSubtask, numParallelSubtasks, properties);
+        } else {
+            return new DisPartitionDiscoverer(topicsDescriptor, indexOfThisSubtask, numParallelSubtasks, properties);
+        }
 	}
 
 	// ------------------------------------------------------------------------

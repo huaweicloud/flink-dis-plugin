@@ -58,13 +58,17 @@ public class DISFlinkStreamingSourceJavaExample {
         disConfig.put(DISConfig.PROPERTY_SK, sk);
         disConfig.put(DISConfig.PROPERTY_PROJECT_ID, projectId);
         disConfig.put(DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG, startingOffsets);
-        disConfig.put(DisConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         disConfig.put(DisConsumerConfig.GROUP_ID_CONFIG, groupId);
+        // 是否主动更新分片信息及更新时间间隔（毫秒），若有主动扩缩容需求，建议开启
+        disConfig.put(FlinkDisConsumer.KEY_PARTITION_DISCOVERY_INTERVAL_MILLIS, "10000");
 
         try {
             // get an ExecutionEnvironment
             StreamExecutionEnvironment env =
                     StreamExecutionEnvironment.getExecutionEnvironment();
+
+            // 开启Flink CheckPoint配置，周期为10000毫秒，开启时若触发CheckPoint，会将Offset信息记录到DIS服务
+            env.enableCheckpointing(10000);
 
             // Create a DIS Consumer
             FlinkDisConsumer<String> consumer =
@@ -78,6 +82,9 @@ public class DISFlinkStreamingSourceJavaExample {
 
             // Print
             stream.print();
+
+            // Write as Text
+//            stream.writeAsText("/tmp/flink/stz_test_sink");
 
             env.execute();
         } catch (Exception ex) {

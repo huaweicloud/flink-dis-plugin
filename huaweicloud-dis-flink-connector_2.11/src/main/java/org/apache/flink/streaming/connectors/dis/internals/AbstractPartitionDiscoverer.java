@@ -45,10 +45,10 @@ public abstract class AbstractPartitionDiscoverer {
     private final DisStreamsDescriptor topicsDescriptor;
 
     /** Index of the consumer subtask that this partition discoverer belongs to. */
-    private final int indexOfThisSubtask;
+    protected final int indexOfThisSubtask;
 
     /** The total number of consumer subtasks. */
-    private final int numParallelSubtasks;
+    protected final int numParallelSubtasks;
 
     /** Flag to determine whether or not the discoverer is closed. */
     private volatile boolean closed = true;
@@ -241,7 +241,7 @@ public abstract class AbstractPartitionDiscoverer {
     protected abstract List<DisStreamPartition> getAllPartitionsForTopics(List<String> topics) throws WakeupException;
 
     protected abstract List<DisStreamPartition> getAllPartitions() throws WakeupException;
-    
+
     // ------------------------------------------------------------------------
     //  Utilities
     // ------------------------------------------------------------------------

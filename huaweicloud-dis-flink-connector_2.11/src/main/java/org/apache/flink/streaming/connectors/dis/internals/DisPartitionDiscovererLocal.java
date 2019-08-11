@@ -29,19 +29,23 @@ import java.util.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * A partition discoverer that can be used to discover topics and partitions metadata
- * from DIS using DIS Kafka Adapter.
+ * A partition discoverer that can be used to discover streams and partitions metadata
+ * from DIS using DIS Kafka Adapter, and you should get partitions by index Of Subtask.
+ *
+ * @see {@link DisPartitionHolder}
  */
 @Internal
-public class DisPartitionDiscoverer extends AbstractPartitionDiscoverer {
+public class DisPartitionDiscovererLocal extends AbstractPartitionDiscoverer {
 
-    private final Properties kafkaProperties;
+    private final Properties disProperties;
 
     private final DisStreamsDescriptor topicsDescriptor;
 
-    private Consumer<?, ?> kafkaConsumer;
+    private DisPartitionHolder disPartitionHolder;
 
-    public DisPartitionDiscoverer(
+    private static DisPartitionDiscovererLocal instance;
+
+    public DisPartitionDiscovererLocal(
             DisStreamsDescriptor topicsDescriptor,
             int indexOfThisSubtask,
             int numParallelSubtasks,
@@ -49,57 +53,36 @@ public class DisPartitionDiscoverer extends AbstractPartitionDiscoverer {
 
         super(topicsDescriptor, indexOfThisSubtask, numParallelSubtasks);
         this.topicsDescriptor = topicsDescriptor;
-        this.kafkaProperties = checkNotNull(kafkaProperties);
+        this.disProperties = checkNotNull(kafkaProperties);
+        this.disPartitionHolder = DisPartitionHolder.getInstance(topicsDescriptor, disProperties);
     }
 
     @Override
     protected void initializeConnections() {
-        this.kafkaConsumer = new DISKafkaConsumer<>(kafkaProperties);
-
-        ConsumerRebalanceListener consumerRebalanceListener = new ConsumerRebalanceListener() {
-            @Override
-            public void onPartitionsRevoked(Collection<TopicPartition> collection) {
-
-            }
-
-            @Override
-            public void onPartitionsAssigned(Collection<TopicPartition> collection) {
-                kafkaConsumer.pause(collection);
-            }
-        };
-        if (this.topicsDescriptor.isFixedTopics()) {
-            this.kafkaConsumer.subscribe(topicsDescriptor.getFixedTopics(), consumerRebalanceListener);
-        } else if (this.topicsDescriptor.isTopicPattern()) {
-            this.kafkaConsumer.subscribe(this.topicsDescriptor.getTopicPattern(), consumerRebalanceListener);
-        } else {
-            throw new IllegalArgumentException("Illegal " + topicsDescriptor.toString());
-        }
+        // Nothing to do
     }
 
     @Override
     protected List<String> getAllTopics() throws WakeupException {
-        return new ArrayList<>(kafkaConsumer.listTopics().keySet());
+//        return disPartitionHolder.getAllTopics();
+        // Action is not supported right now
+        throw new UnsupportedOperationException();
     }
 
     @Override
     protected List<DisStreamPartition> getAllPartitionsForTopics(List<String> topics) throws WakeupException {
-        List<DisStreamPartition> partitions = new LinkedList<>();
-
-        for (String topic : topics) {
-            for (PartitionInfo partitionInfo : kafkaConsumer.partitionsFor(topic)) {
-                partitions.add(new DisStreamPartition(partitionInfo.topic(), partitionInfo.partition()));
-            }
-        }
-        return partitions;
+        // Action is not supported right now
+        throw new UnsupportedOperationException();
     }
 
     @Override
     protected List<DisStreamPartition> getAllPartitions() throws WakeupException {
         List<DisStreamPartition> partitions = new LinkedList<>();
 
-        this.kafkaConsumer.poll(0);
-        for (TopicPartition topicPartition : kafkaConsumer.assignment()) {
-            partitions.add(new DisStreamPartition(topicPartition.topic(), topicPartition.partition()));
+        for (DisStreamPartition topicPartition : disPartitionHolder.getAllPartitions()) {
+            if (topicPartition.getPartition() % this.numParallelSubtasks == this.indexOfThisSubtask) {
+                partitions.add(topicPartition);
+            }
         }
 
         return partitions;
@@ -107,18 +90,11 @@ public class DisPartitionDiscoverer extends AbstractPartitionDiscoverer {
 
     @Override
     protected void wakeupConnections() {
-        if (this.kafkaConsumer != null) {
-            this.kafkaConsumer.wakeup();
-        }
+        // Nothing to do
     }
 
     @Override
     protected void closeConnections() throws Exception {
-        if (this.kafkaConsumer != null) {
-            this.kafkaConsumer.close();
-
-            // de-reference the consumer to avoid closing multiple times
-            this.kafkaConsumer = null;
-        }
+        this.disPartitionHolder.close();
     }
 }

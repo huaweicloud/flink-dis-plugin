@@ -64,10 +64,10 @@ public class DisConsumerThread extends Thread {
 	/** The configuration for the Kafka consumer. */
 	private final Properties kafkaProperties;
 
-	/** The queue of unassigned partitions that we need to assign to the Kafka consumer. */
+	/** The queue of unassigned partitions that we need to assign to the DIS Kafka consumer. */
 	private final ClosableBlockingQueue<DisStreamPartitionState<TopicPartition>> unassignedPartitionsQueue;
 
-    /** The queue of unassigned partitions that we need to assign to the Kafka consumer. */
+    /** The queue of unassigned partitions that we need to assign to the DIS Kafka consumer. */
     private final ClosableBlockingQueue<DisStreamPartitionState<TopicPartition>> unrevokedPartitionsQueue;
     
 	/** The indirections on KafkaConsumer methods, for cases where KafkaConsumer compatibility is broken. */
@@ -211,7 +211,7 @@ public class DisConsumerThread extends Thread {
 							nextOffsetsToCommit.getAndSet(null);
 
 					if (commitOffsetsAndCallback != null) {
-						log.debug("Sending async offset commit request to Kafka broker");
+						log.debug("Sending async offset commit request to DIS");
 
 						// also record that a commit is already in progress
 						// the order here matters! first set the flag, then send the commit command.
@@ -332,7 +332,7 @@ public class DisConsumerThread extends Thread {
 
 		// record the work to be committed by the main consumer thread and make sure the consumer notices that
 		if (nextOffsetsToCommit.getAndSet(Tuple2.of(offsetsToCommit, commitCallback)) != null) {
-			log.warn("Committing offsets to Kafka takes longer than the checkpoint interval. " +
+			log.warn("Committing offsets to DIS takes longer than the checkpoint interval. " +
 					"Skipping commit of previous offsets because newer complete checkpoint offsets are available. " +
 					"This does not compromise Flink's checkpoint integrity.");
 		}
@@ -514,7 +514,7 @@ public class DisConsumerThread extends Thread {
 			commitInProgress = false;
 
 			if (ex != null) {
-				log.warn("Committing offsets to Kafka failed. This does not compromise Flink's checkpoints.", ex);
+				log.warn("Committing offsets to DIS failed. This does not compromise Flink's checkpoints.", ex);
 				internalCommitCallback.onException(ex);
 			} else {
 				internalCommitCallback.onSuccess();
