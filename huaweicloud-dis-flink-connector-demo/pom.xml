@@ -6,11 +6,11 @@
 
     <groupId>com.huaweicloud.dis</groupId>
     <artifactId>huaweicloud-dis-flink-connector-demo</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <properties>
-        <huaweicloud-dis-flink-connector_2.11.version>1.0.0</huaweicloud-dis-flink-connector_2.11.version>
+        <huaweicloud-dis-flink-connector_2.11.version>1.0.1-SNAPSHOT</huaweicloud-dis-flink-connector_2.11.version>
         <scala.binary.version>2.11</scala.binary.version>
         
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -22,7 +22,7 @@
         <dependency>
             <groupId>com.huaweicloud.dis</groupId>
             <artifactId>huaweicloud-dis-flink-connector_2.11</artifactId>
-            <version>1.0.0</version>
+            <version>1.0.1-SNAPSHOT</version>
         </dependency>
         <!-- streaming-java dependencies -->
         <dependency>
