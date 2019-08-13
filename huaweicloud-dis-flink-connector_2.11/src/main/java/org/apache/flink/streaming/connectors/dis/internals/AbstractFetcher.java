@@ -43,15 +43,15 @@ import static org.apache.flink.streaming.connectors.dis.internals.metrics.DISKaf
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Base class for all fetchers, which implement the connections to Kafka brokers and
- * pull records from Kafka partitions.
+ * Base class for all fetchers, which implement the connections to DIS and
+ * pull records from DIS.
  *
  * <p>This fetcher base class implements the logic around emitting records and tracking offsets,
  * as well as around the optional timestamp assignment and watermark generation.
  *
- * @param <T> The type of elements deserialized from Kafka's byte records, and emitted into
+ * @param <T> The type of elements deserialized from DIS's byte records, and emitted into
  *            the Flink data streams.
- * @param <KPH> The type of topic/partition identifier used by Kafka in the specific version.
+ * @param <KPH> The type of topic/partition identifier used by DIS in the specific version.
  */
 @Internal
 public abstract class AbstractFetcher<T, KPH> {

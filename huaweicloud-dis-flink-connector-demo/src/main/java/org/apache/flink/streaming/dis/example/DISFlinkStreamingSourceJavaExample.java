@@ -3,9 +3,11 @@ package org.apache.flink.streaming.dis.example;
 import com.huaweicloud.dis.DISConfig;
 import com.huaweicloud.dis.adapter.common.consumer.DisConsumerConfig;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.connectors.dis.FlinkDisConsumer;
+import org.apache.flink.streaming.connectors.dis.FlinkDisProducer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,7 +61,7 @@ public class DISFlinkStreamingSourceJavaExample {
         disConfig.put(DISConfig.PROPERTY_PROJECT_ID, projectId);
         disConfig.put(DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG, startingOffsets);
         disConfig.put(DisConsumerConfig.GROUP_ID_CONFIG, groupId);
-        // 是否主动更新分片信息及更新时间间隔（毫秒），若有主动扩缩容需求，建议开启
+        // 是否主动更新分片信息及更新时间间隔（毫秒），若有主动扩缩容需求，可以开启
         disConfig.put(FlinkDisConsumer.KEY_PARTITION_DISCOVERY_INTERVAL_MILLIS, "10000");
 
         try {
@@ -70,6 +72,9 @@ public class DISFlinkStreamingSourceJavaExample {
             // 开启Flink CheckPoint配置，周期为10000毫秒，开启时若触发CheckPoint，会将Offset信息记录到DIS服务
             env.enableCheckpointing(10000);
 
+            // 设置时间特性，设置TimeCharacteristic.EventTime可以获取到记录写入DIS的时间
+            env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+
             // Create a DIS Consumer
             FlinkDisConsumer<String> consumer =
                     new FlinkDisConsumer<String>(
@@ -78,7 +83,7 @@ public class DISFlinkStreamingSourceJavaExample {
                             disConfig);
 
             // Create DIS Consumer data source
-            DataStream<String> stream = env.addSource(consumer);
+            DataStream<String> stream = env.addSource(consumer).process(new MyFunction());
 
             // Print
             stream.print();

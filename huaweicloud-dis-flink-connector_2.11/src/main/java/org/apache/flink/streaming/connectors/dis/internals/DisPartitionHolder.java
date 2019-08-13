@@ -1,12 +1,14 @@
 package org.apache.flink.streaming.connectors.dis.internals;
 
 import com.huaweicloud.dis.adapter.kafka.clients.consumer.Consumer;
-import com.huaweicloud.dis.adapter.kafka.clients.consumer.ConsumerRebalanceListener;
 import com.huaweicloud.dis.adapter.kafka.clients.consumer.DISKafkaConsumer;
-import com.huaweicloud.dis.adapter.kafka.common.TopicPartition;
+import com.huaweicloud.dis.adapter.kafka.common.PartitionInfo;
 import org.apache.flink.streaming.connectors.dis.FlinkDisConsumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.PropertiesUtil.getLong;
@@ -16,6 +18,8 @@ import static org.apache.flink.util.PropertiesUtil.getLong;
  * 更新后的Partition信息并分配给子任务。
  */
 public class DisPartitionHolder {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DisPartitionHolder.class);
 
     private final Properties disProperties;
 
@@ -32,36 +36,37 @@ public class DisPartitionHolder {
     private static DisPartitionHolder instance;
 
     private DisPartitionHolder(DisStreamsDescriptor topicsDescriptor,
-            Properties disProperties) {
+                               Properties disProperties) {
         this.disProperties = checkNotNull(disProperties);
         this.topicsDescriptor = topicsDescriptor;
 
         this.disKafkaConsumer = new DISKafkaConsumer<>(disProperties);
-
-        ConsumerRebalanceListener consumerRebalanceListener = new ConsumerRebalanceListener() {
-            @Override
-            public void onPartitionsRevoked(Collection<TopicPartition> collection) {
-
-            }
-
-            @Override
-            public void onPartitionsAssigned(Collection<TopicPartition> collection) {
-                disKafkaConsumer.pause(collection);
-            }
-        };
+        Map<String, List<PartitionInfo>> topicPartitions = disKafkaConsumer.listTopics();
         if (this.topicsDescriptor.isFixedTopics()) {
-            this.disKafkaConsumer.subscribe(topicsDescriptor.getFixedTopics(), consumerRebalanceListener);
+            List<String> topicList = topicsDescriptor.getFixedTopics();
+            for (Map.Entry<String, List<PartitionInfo>> entry : topicPartitions.entrySet()) {
+                String streamName = entry.getKey();
+                if (topicList.contains(streamName)) {
+                    List<PartitionInfo> partitionInfos = entry.getValue();
+                    for (PartitionInfo partitionInfo : partitionInfos) {
+                        allPartitions.add(new DisStreamPartition(entry.getKey(), partitionInfo.partition()));
+                    }
+                }
+            }
         } else if (this.topicsDescriptor.isTopicPattern()) {
-            this.disKafkaConsumer.subscribe(this.topicsDescriptor.getTopicPattern(), consumerRebalanceListener);
+            Pattern topicPattern = this.topicsDescriptor.getTopicPattern();
+            for (Map.Entry<String, List<PartitionInfo>> entry : topicPartitions.entrySet()) {
+                String streamName = entry.getKey();
+                if (topicPattern.matcher(streamName).matches()) {
+                    List<PartitionInfo> partitionInfos = entry.getValue();
+                    for (PartitionInfo partitionInfo : partitionInfos) {
+                        allPartitions.add(new DisStreamPartition(entry.getKey(), partitionInfo.partition()));
+                    }
+                }
+            }
         } else {
             throw new IllegalArgumentException("Illegal " + topicsDescriptor.toString());
         }
-
-        this.disKafkaConsumer.poll(0);
-        for (TopicPartition topicPartition : disKafkaConsumer.assignment()) {
-            allPartitions.add(new DisStreamPartition(topicPartition.topic(), topicPartition.partition()));
-        }
-//        this.allTopics = new ArrayList<>(disKafkaConsumer.listTopics().keySet());
 
         long discoveryIntervalMillis = getLong(
                 disProperties,
@@ -72,12 +77,38 @@ public class DisPartitionHolder {
                 public void run() {
                     while (true) {
                         List<DisStreamPartition> newDiscoveredPartitions = new LinkedList<>();
-                        disKafkaConsumer.poll(0);
-                        for (TopicPartition topicPartition : disKafkaConsumer.assignment()) {
-                            newDiscoveredPartitions.add(new DisStreamPartition(topicPartition.topic(), topicPartition.partition()));
+                        Map<String, List<PartitionInfo>> newTopicPartitions;
+                        try {
+                            newTopicPartitions = disKafkaConsumer.listTopics();
+                        } catch (Exception e) {
+                            LOG.warn("Failed to get Stream List from DIS, continue.", e);
+                            continue;
+                        }
+                        if (topicsDescriptor.isFixedTopics()) {
+                            List<String> topicList = topicsDescriptor.getFixedTopics();
+                            for (Map.Entry<String, List<PartitionInfo>> entry : newTopicPartitions.entrySet()) {
+                                String streamName = entry.getKey();
+                                if (topicList.contains(streamName)) {
+                                    List<PartitionInfo> partitionInfos = entry.getValue();
+                                    for (PartitionInfo partitionInfo : partitionInfos) {
+                                        newDiscoveredPartitions.add(new DisStreamPartition(entry.getKey(), partitionInfo.partition()));
+                                    }
+                                }
+                            }
+                        } else if (topicsDescriptor.isTopicPattern()) {
+                            Pattern topicPattern = topicsDescriptor.getTopicPattern();
+                            for (Map.Entry<String, List<PartitionInfo>> entry : newTopicPartitions.entrySet()) {
+                                String streamName = entry.getKey();
+                                if (topicPattern.matcher(streamName).matches()) {
+                                    List<PartitionInfo> partitionInfos = entry.getValue();
+                                    for (PartitionInfo partitionInfo : partitionInfos) {
+                                        newDiscoveredPartitions.add(new DisStreamPartition(entry.getKey(), partitionInfo.partition()));
+                                    }
+                                }
+                            }
                         }
                         allPartitions = newDiscoveredPartitions;
-                        allTopics = new ArrayList<>(disKafkaConsumer.listTopics().keySet());
+//                        allTopics = new ArrayList<>(disKafkaConsumer.listTopics().keySet());
 
                         try {
                             Thread.sleep(discoveryIntervalMillis);
@@ -97,10 +128,8 @@ public class DisPartitionHolder {
     }
 
     public static synchronized DisPartitionHolder getInstance(DisStreamsDescriptor topicsDescriptor,
-                                                              Properties disProperties)
-    {
-        if (instance == null)
-        {
+                                                              Properties disProperties) {
+        if (instance == null) {
             instance = new DisPartitionHolder(topicsDescriptor, disProperties);
         }
         return instance;
