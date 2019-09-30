@@ -1,8 +1,16 @@
 package org.apache.flink.streaming.connectors.dis.internals;
 
+import com.huaweicloud.dis.Constants;
+import com.huaweicloud.dis.DISClient;
+import com.huaweicloud.dis.DISConfig;
+import com.huaweicloud.dis.adapter.common.Utils;
 import com.huaweicloud.dis.adapter.kafka.clients.consumer.Consumer;
 import com.huaweicloud.dis.adapter.kafka.clients.consumer.DISKafkaConsumer;
 import com.huaweicloud.dis.adapter.kafka.common.PartitionInfo;
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition;
+import com.huaweicloud.dis.exception.DISClientException;
+import com.huaweicloud.dis.exception.DISStreamNotExistsException;
+import com.huaweicloud.dis.iface.app.response.DescribeAppResult;
 import org.apache.flink.streaming.connectors.dis.FlinkDisConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +41,8 @@ public class DisPartitionHolder {
 
     private Consumer<?, ?> disKafkaConsumer;
 
+    private DISClient disClient;
+
     private static DisPartitionHolder instance;
 
     private DisPartitionHolder(DisStreamsDescriptor topicsDescriptor,
@@ -40,6 +50,8 @@ public class DisPartitionHolder {
         this.disProperties = checkNotNull(disProperties);
         this.topicsDescriptor = topicsDescriptor;
 
+        DISConfig disConfig = Utils.newDisConfig(disProperties);
+        this.disClient = new DISClient(disConfig);
         this.disKafkaConsumer = new DISKafkaConsumer<>(disProperties);
         Map<String, List<PartitionInfo>> topicPartitions = disKafkaConsumer.listTopics();
         if (this.topicsDescriptor.isFixedTopics()) {
@@ -50,6 +62,15 @@ public class DisPartitionHolder {
                     List<PartitionInfo> partitionInfos = entry.getValue();
                     for (PartitionInfo partitionInfo : partitionInfos) {
                         allPartitions.add(new DisStreamPartition(entry.getKey(), partitionInfo.partition()));
+                    }
+                }
+            }
+
+            // 订阅的通道不存在
+            if (allPartitions.size() != topicPartitions.size()) {
+                for (String topic : topicList) {
+                    if (!topicPartitions.containsKey(topic)) {
+                        throw new DISStreamNotExistsException(topic);
                     }
                 }
             }
@@ -64,9 +85,18 @@ public class DisPartitionHolder {
                     }
                 }
             }
+
+            // 订阅的通道不存在
+            if (allPartitions.isEmpty()) {
+                throw new DISStreamNotExistsException(topicPattern.pattern());
+            }
         } else {
             throw new IllegalArgumentException("Illegal " + topicsDescriptor.toString());
         }
+
+        // 自动创建App
+        String groupId = disConfig.getGroupId();
+        autoCreateApp(groupId);
 
         long discoveryIntervalMillis = getLong(
                 disProperties,
@@ -141,6 +171,32 @@ public class DisPartitionHolder {
 
     public List<String> getAllTopics() {
         return allTopics;
+    }
+
+    /**
+     * App不存在时，自动创建App
+     * @param groupId App名称
+     */
+    private void autoCreateApp(String groupId) {
+        try {
+            disClient.describeApp(groupId);
+        } catch (DISClientException describeException) {
+            if (describeException.getMessage() == null
+                    || !describeException.getMessage().contains(Constants.ERROR_CODE_APP_NAME_NOT_EXISTS)) {
+                throw describeException;
+            }
+            try {
+                // app not exist, create
+                disClient.createApp(groupId);
+                LOG.info("App [{}] does not exist and created successfully.", groupId);
+            } catch (DISClientException createException) {
+                if (createException.getMessage() == null
+                        || !createException.getMessage().contains(Constants.ERROR_CODE_APP_NAME_EXISTS)) {
+                    LOG.error("App {} does not exist and created unsuccessfully. {}", groupId, createException.getMessage());
+                    throw createException;
+                }
+            }
+        }
     }
 
     public void close() {

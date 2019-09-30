@@ -12,6 +12,6 @@ public class MyFunction extends ProcessFunction<String, String> {
     @Override
     public void processElement(String value, Context ctx, Collector<String> out) throws Exception {
         // TODO
-        LOGGER.info("Event Time: {}", ctx.timestamp());
+        LOGGER.info("Event Time: {}, Value: {}", ctx.timestamp(), value);
     }
 }
