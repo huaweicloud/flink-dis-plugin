@@ -265,8 +265,8 @@ public abstract class AbstractFetcher<T, KPH> {
         }
 
         for (DisStreamPartition revokedPartition : revokedPartitions) {
-            // subscribedPartitionStates.removeIf(next -> next.getKafkaTopicPartition().equals(revokedPartition));
-            unrevokedPartitionsQueue.add(new DisStreamPartitionState<>(revokedPartition,
+             subscribedPartitionStates.removeIf(next -> next.getKafkaTopicPartition().equals(revokedPartition));
+             unrevokedPartitionsQueue.add(new DisStreamPartitionState<>(revokedPartition,
                     createKafkaPartitionHandle(revokedPartition)));
         }
     }

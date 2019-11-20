@@ -140,8 +140,8 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 	/** Timestamp to determine startup offsets; only relevant when startup mode is {@link StartupMode#TIMESTAMP}. */
 	private Long startupOffsetsTimestamp;
 
-	/** The ReBalance mode for the partition discoverer (default is {@link RebalanceMode#CLIENT}). */
-	protected RebalanceMode rebalanceMode = RebalanceMode.CLIENT;
+	/** The ReBalance mode for the partition discoverer (default is {@link RebalanceMode#SERVER}). */
+	protected RebalanceMode rebalanceMode = RebalanceMode.SERVER;
 
 	// ------------------------------------------------------------------------
 	//  runtime state (used individually by each parallel subtask)

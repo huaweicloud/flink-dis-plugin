@@ -23,10 +23,13 @@ import com.huaweicloud.dis.adapter.kafka.common.Metric;
 import com.huaweicloud.dis.adapter.kafka.common.MetricName;
 import com.huaweicloud.dis.adapter.kafka.common.TopicPartition;
 import com.huaweicloud.dis.exception.DISClientException;
+import com.huaweicloud.dis.exception.DISPartitionExpiredException;
+import com.huaweicloud.dis.exception.DISPartitionNotExistsException;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.streaming.connectors.dis.FlinkDisConsumer;
 import org.apache.flink.streaming.connectors.dis.internals.metrics.DISMetricWrapper;
 import org.slf4j.Logger;
 
@@ -35,6 +38,7 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.PropertiesUtil.getLong;
 
 /**
  * The thread the runs the {@link DISKafkaConsumer}, connecting to the brokers and polling records.
@@ -109,6 +113,9 @@ public class DisConsumerThread extends Thread {
 
 	/** Flag tracking whether the latest commit request has completed. */
 	private volatile boolean commitInProgress;
+
+	/** 是否正在缩容中 **/
+	private volatile boolean isScalingDown;
 
 	public DisConsumerThread(
 			Logger log,
@@ -216,6 +223,7 @@ public class DisConsumerThread extends Thread {
 						// also record that a commit is already in progress
 						// the order here matters! first set the flag, then send the commit command.
 						commitInProgress = true;
+						// FIXME DIS Kafka Adapter 异步提交 Offset 时部分异常没有抛出，也没有调用回调函数，会导致 commitInProgress 一直为 true
 						consumer.commitAsync(commitOffsetsAndCallback.f0, new CommitCallback(commitOffsetsAndCallback.f1));
 					}
 				}
@@ -255,7 +263,34 @@ public class DisConsumerThread extends Thread {
 
 				// get the next batch of records, unless we did not manage to hand the old batch over
 				if (records == null) {
-					records = consumer.poll(pollTimeout);
+					try {
+						records = consumer.poll(pollTimeout);
+					} catch (DISClientException ex) {
+						long discoveryIntervalMillis = getLong(
+								kafkaProperties,
+								FlinkDisConsumer.KEY_PARTITION_DISCOVERY_INTERVAL_MILLIS, FlinkDisConsumer.PARTITION_DISCOVERY_DISABLED);
+						if (discoveryIntervalMillis != FlinkDisConsumer.PARTITION_DISCOVERY_DISABLED) {
+							Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+							// 分片过期时，无需抛出异常，等待 ReBalance 完成即可
+							if (ex instanceof DISPartitionExpiredException || cause instanceof DISPartitionExpiredException) {
+								isScalingDown = true ; // 标记状态为正在缩容中
+								long sleepTime = 30 * 1000;
+								log.warn("Partition expired, waiting " + sleepTime + " ms for the completion of ReBalance.", ex);
+								Thread.sleep(sleepTime);
+								// 待提交的 Offset 信息中可能包含已过期的分片，直接清理
+								nextOffsetsToCommit.set(null);
+								commitInProgress = false;
+								isScalingDown = false;
+								continue;
+							} else {
+								// 其它类型的异常，直接抛出
+								throw ex;
+							}
+						} else {
+							// 自动匹配扩缩容分区的配置项没有开启时，直接抛出异常即可
+							throw ex;
+						}
+					}
 				}
 
 				try {
@@ -329,6 +364,12 @@ public class DisConsumerThread extends Thread {
 	void setOffsetsToCommit(
 			Map<TopicPartition, OffsetAndMetadata> offsetsToCommit,
 			@Nonnull DisCommitCallback commitCallback) {
+
+		// 正在缩容中，不需要提交 Offset
+		if (isScalingDown) {
+			log.info("The stream is scaling down, skipping commit of offsets.");
+			return ;
+		}
 
 		// record the work to be committed by the main consumer thread and make sure the consumer notices that
 		if (nextOffsetsToCommit.getAndSet(Tuple2.of(offsetsToCommit, commitCallback)) != null) {
