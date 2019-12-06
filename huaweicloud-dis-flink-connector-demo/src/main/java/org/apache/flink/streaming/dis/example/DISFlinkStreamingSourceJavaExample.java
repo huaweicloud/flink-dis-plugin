@@ -8,6 +8,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.connectors.dis.FlinkDisConsumer;
 import org.apache.flink.streaming.connectors.dis.FlinkDisProducer;
+import org.apache.flink.streaming.connectors.dis.config.RebalanceMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,7 +55,9 @@ public class DISFlinkStreamingSourceJavaExample {
 
         // DIS Config
         DISConfig disConfig = DISConfig.buildDefaultConfig();
-        disConfig.put(DISConfig.PROPERTY_ENDPOINT, endpoint);
+//        disConfig.put(DISConfig.PROPERTY_ENDPOINT, endpoint);
+        disConfig.put(DISConfig.PROPERTY_ENDPOINT, "https://10.78.12.103:8443/dis-gw");
+        disConfig.put(DISConfig.PROPERTY_MANAGER_ENDPOINT, "https://10.78.12.103:8443");
         disConfig.put(DISConfig.PROPERTY_REGION_ID, region);
         disConfig.put(DISConfig.PROPERTY_AK, ak);
         disConfig.put(DISConfig.PROPERTY_SK, sk);
@@ -70,7 +73,7 @@ public class DISFlinkStreamingSourceJavaExample {
                     StreamExecutionEnvironment.getExecutionEnvironment();
 
             // 开启Flink CheckPoint配置，周期为10000毫秒，开启时若触发CheckPoint，会将Offset信息记录到DIS服务
-            env.enableCheckpointing(10000);
+            env.enableCheckpointing(20000);
 
             // 设置时间特性，设置TimeCharacteristic.EventTime可以获取到记录写入DIS的时间
             env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);

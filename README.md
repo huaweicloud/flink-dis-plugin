@@ -18,7 +18,7 @@ The recommended way to use the DIS SDK for DIS Flink Connector in your project i
     <dependency>
         <groupId>com.huaweicloud.dis</groupId>
         <artifactId>huaweicloud-dis-flink-connector_2.11</artifactId>
-        <version>1.0.3</version>
+        <version>1.0.4</version>
         <scope>compile</scope>
     </dependency>
 
