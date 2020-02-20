@@ -217,7 +217,7 @@ public class DisConsumerThread extends Thread {
 					final Tuple2<Map<TopicPartition, OffsetAndMetadata>, DisCommitCallback> commitOffsetsAndCallback =
 							nextOffsetsToCommit.getAndSet(null);
 
-					if (commitOffsetsAndCallback != null) {
+					if (commitOffsetsAndCallback != null && commitOffsetsAndCallback.f0.size() > 0) {
 						log.debug("Sending async offset commit request to DIS");
 
 						// also record that a commit is already in progress
