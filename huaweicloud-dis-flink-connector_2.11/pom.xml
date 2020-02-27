@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.huaweicloud.dis</groupId>
         <artifactId>huaweicloud-dis-flink-connector-parent_2.11</artifactId>
-        <version>1.0.5-SNAPSHOT</version>
+        <version>1.0.6-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>huaweicloud-dis-flink-connector_2.11</artifactId>
