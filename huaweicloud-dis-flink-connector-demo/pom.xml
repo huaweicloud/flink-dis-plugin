@@ -28,7 +28,7 @@
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-streaming-java_2.11</artifactId>
-            <version>1.5.3</version>
+            <version>1.7.0</version>
             <!-- please comment this if run demo locally -->
             <!--<scope>provided</scope>-->
         </dependency>
