@@ -17,9 +17,11 @@
 
 package org.apache.flink.streaming.connectors.dis;
 
+import org.apache.commons.collections.Closure;
 import org.apache.commons.collections.map.LinkedMap;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.OperatorStateStore;
@@ -31,10 +33,7 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.runtime.state.CheckpointListener;
-import org.apache.flink.runtime.state.DefaultOperatorStateBackend;
-import org.apache.flink.runtime.state.FunctionInitializationContext;
-import org.apache.flink.runtime.state.FunctionSnapshotContext;
+import org.apache.flink.runtime.state.*;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
 import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
@@ -265,7 +264,7 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 			throw new IllegalStateException("A periodic watermark emitter has already been set.");
 		}
 		try {
-			ClosureCleaner.clean(assigner, true);
+			ClosureCleaner.clean(assigner,ExecutionConfig.ClosureCleanerLevel.TOP_LEVEL,  true);
 			this.punctuatedWatermarkAssigner = new SerializedValue<>(assigner);
 			return this;
 		} catch (Exception e) {
@@ -300,7 +299,7 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 			throw new IllegalStateException("A punctuated watermark emitter has already been set.");
 		}
 		try {
-			ClosureCleaner.clean(assigner, true);
+			ClosureCleaner.clean(assigner, ExecutionConfig.ClosureCleanerLevel.TOP_LEVEL,  true);
 			this.periodicWatermarkAssigner = new SerializedValue<>(assigner);
 			return this;
 		} catch (Exception e) {
@@ -783,8 +782,9 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 
 		OperatorStateStore stateStore = context.getOperatorStateStore();
 
-		ListState<Tuple2<DisStreamPartition, Long>> oldRoundRobinListState =
-			stateStore.getSerializableListState(DefaultOperatorStateBackend.DEFAULT_OPERATOR_STATE_NAME);
+		ListState<Tuple2<DisStreamPartition, Long>> oldRoundRobinListState =	stateStore.getListState(new ListStateDescriptor<>(DefaultOperatorStateBackend.DEFAULT_OPERATOR_STATE_NAME,new JavaSerializer<>()));
+		//ListState<Tuple2<DisStreamPartition, Long>> oldRoundRobinListState =
+		//stateStore.getSerializableListState(DefaultOperatorStateBackend.DEFAULT_OPERATOR_STATE_NAME);
 
 		this.unionOffsetStates = stateStore.getUnionListState(new ListStateDescriptor<>(
 				OFFSETS_STATE_NAME,
