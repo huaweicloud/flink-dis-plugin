@@ -76,19 +76,6 @@ public class DisPartitionDiscovererLocal extends AbstractPartitionDiscoverer {
     }
 
     @Override
-    protected List<DisStreamPartition> getAllPartitions() throws WakeupException {
-        List<DisStreamPartition> partitions = new LinkedList<>();
-
-        for (DisStreamPartition topicPartition : disPartitionHolder.getAllPartitions()) {
-            if (topicPartition.getPartition() % this.numParallelSubtasks == this.indexOfThisSubtask) {
-                partitions.add(topicPartition);
-            }
-        }
-
-        return partitions;
-    }
-
-    @Override
     protected void wakeupConnections() {
         // Nothing to do
     }

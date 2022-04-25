@@ -242,34 +242,6 @@ public abstract class AbstractFetcher<T, KPH> {
 			unassignedPartitionsQueue.add(newPartitionState);
 		}
 	}
-
-    public void changePartitions(List<DisStreamPartition> newPartitions, List<DisStreamPartition> revokedPartitions) 
-            throws IOException, ClassNotFoundException {
-        List<DisStreamPartitionState<KPH>> newPartitionStates = createPartitionStateHolders(
-                newPartitions,
-                DisStreamPartitionStateSentinel.EARLIEST_OFFSET,
-                timestampWatermarkMode,
-                watermarksPeriodic,
-                watermarksPunctuated,
-                userCodeClassLoader);
-
-        if (useMetrics) {
-            registerOffsetMetrics(consumerMetricGroup, newPartitionStates);
-        }
-
-        for (DisStreamPartitionState<KPH> newPartitionState : newPartitionStates) {
-            // the ordering is crucial here; first register the state holder, then
-            // push it to the partitions queue to be read
-            subscribedPartitionStates.add(newPartitionState);
-            unassignedPartitionsQueue.add(newPartitionState);
-        }
-
-        for (DisStreamPartition revokedPartition : revokedPartitions) {
-             subscribedPartitionStates.removeIf(next -> next.getKafkaTopicPartition().equals(revokedPartition));
-             unrevokedPartitionsQueue.add(new DisStreamPartitionState<>(revokedPartition,
-                    createKafkaPartitionHandle(revokedPartition)));
-        }
-    }
     
 	// ------------------------------------------------------------------------
 	//  Properties

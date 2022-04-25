@@ -86,22 +86,19 @@ public class DisPartitionDiscoverer extends AbstractPartitionDiscoverer {
         List<DisStreamPartition> partitions = new LinkedList<>();
 
         for (String topic : topics) {
-            for (PartitionInfo partitionInfo : kafkaConsumer.partitionsFor(topic)) {
+            final List<PartitionInfo> kafkaPartitions = kafkaConsumer.partitionsFor(topic);
+
+            if (kafkaPartitions == null) {
+                throw new RuntimeException(
+                    String.format(
+                        "Could not fetch partitions for %s. Make sure that the stream exists.",
+                        topic));
+            }
+
+            for (PartitionInfo partitionInfo : kafkaPartitions) {
                 partitions.add(new DisStreamPartition(partitionInfo.topic(), partitionInfo.partition()));
             }
         }
-        return partitions;
-    }
-
-    @Override
-    protected List<DisStreamPartition> getAllPartitions() throws WakeupException {
-        List<DisStreamPartition> partitions = new LinkedList<>();
-
-        this.kafkaConsumer.poll(0);
-        for (TopicPartition topicPartition : kafkaConsumer.assignment()) {
-            partitions.add(new DisStreamPartition(topicPartition.topic(), topicPartition.partition()));
-        }
-
         return partitions;
     }
 

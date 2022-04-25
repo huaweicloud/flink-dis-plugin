@@ -467,7 +467,7 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 
 		subscribedPartitionsToStartOffsets = new HashMap<>();
 
-		List<DisStreamPartition> allPartitions = partitionDiscoverer.discoverPartitions().f0;
+		List<DisStreamPartition> allPartitions = partitionDiscoverer.discoverPartitions();
 
 		if (restoredState != null) {
 			for (DisStreamPartition partition : allPartitions) {
@@ -669,9 +669,6 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 					try {
 						// --------------------- partition discovery loop ---------------------
 
-						List<DisStreamPartition> discoveredPartitions;
-                        List<DisStreamPartition> revokedPartitions;
-
 						// throughout the loop, we always eagerly check if we are still running before
 						// performing the next operation, so that we can escape the loop as soon as possible
 
@@ -680,10 +677,9 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 								LOG.debug("Consumer subtask {} is trying to discover new partitions ...", getRuntimeContext().getIndexOfThisSubtask());
 							}
 
+							final List<DisStreamPartition> discoveredPartitions;
 							try {
-                                Tuple2<List<DisStreamPartition>, List<DisStreamPartition>> tuple2 = partitionDiscoverer.discoverPartitions();
-                                discoveredPartitions = tuple2.f0;
-                                revokedPartitions = tuple2.f1;
+                                discoveredPartitions = partitionDiscoverer.discoverPartitions();
                             } catch (AbstractPartitionDiscoverer.WakeupException | AbstractPartitionDiscoverer.ClosedException e) {
 								// the partition discoverer may have been closed or woken up before or during the discovery;
 								// this would only happen if the consumer was canceled; simply escape the loop
@@ -691,8 +687,8 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 							}
 
 							// no need to add the discovered partitions if we were closed during the meantime
-                            if (running && (!discoveredPartitions.isEmpty() || !revokedPartitions.isEmpty())) {
-                                disFetcher.changePartitions(discoveredPartitions, revokedPartitions);
+                            if (running && (!discoveredPartitions.isEmpty())) {
+                                disFetcher.addDiscoveredPartitions(discoveredPartitions);
                             }
 
 							// do not waste any time sleeping if we're not running anymore

@@ -119,12 +119,10 @@ public abstract class AbstractPartitionDiscoverer {
      *
      * @return List of discovered new partitions that this subtask should subscribe to.
      */
-    public Tuple2<List<DisStreamPartition>, List<DisStreamPartition>> discoverPartitions() throws WakeupException, ClosedException {
+    public List<DisStreamPartition> discoverPartitions() throws WakeupException, ClosedException {
         if (!closed && !wakeup) {
             try {
-                List<DisStreamPartition> newDiscoveredPartitions = getAllPartitions();
-                List<DisStreamPartition> newRevokedPartitions = new ArrayList<>();
-                /*
+                List<DisStreamPartition> newDiscoveredPartitions;
                 // (1) get all possible partitions, based on whether we are subscribed to fixed topics or a topic pattern
                 if (topicsDescriptor.isFixedTopics()) {
                     newDiscoveredPartitions = getAllPartitionsForTopics(topicsDescriptor.getFixedTopics());
@@ -146,10 +144,8 @@ public abstract class AbstractPartitionDiscoverer {
                         newDiscoveredPartitions = null;
                     }
                 }
-                */
                 // (2) eliminate partition that are old partitions or should not be subscribed by this subtask
-                // || newDiscoveredPartitions.isEmpty()
-                if (newDiscoveredPartitions == null) {
+                if (newDiscoveredPartitions == null || newDiscoveredPartitions.isEmpty()) {
                     throw new RuntimeException("Unable to retrieve any partitions with KafkaTopicsDescriptor: " + topicsDescriptor);
                 } else {
                     Iterator<DisStreamPartition> discoveredPartitionsIterator = discoveredPartitions.iterator();
@@ -157,7 +153,6 @@ public abstract class AbstractPartitionDiscoverer {
                         DisStreamPartition oldStreamPartition = discoveredPartitionsIterator.next();
                         if (!newDiscoveredPartitions.contains(oldStreamPartition)) {
                             discoveredPartitionsIterator.remove();
-                            newRevokedPartitions.add(oldStreamPartition);
                         }
                     }
 
@@ -171,7 +166,7 @@ public abstract class AbstractPartitionDiscoverer {
                     }
                 }
 
-                return Tuple2.of(newDiscoveredPartitions, newRevokedPartitions);
+                return newDiscoveredPartitions;
             } catch (WakeupException e) {
                 // the actual topic / partition metadata fetching methods
                 // may be woken up midway; reset the wakeup flag and rethrow
@@ -206,8 +201,7 @@ public abstract class AbstractPartitionDiscoverer {
         if (isUndiscoveredPartition(partition)) {
             discoveredPartitions.add(partition);
 
-            //return DisStreamPartitionAssigner.assign(partition, numParallelSubtasks) == indexOfThisSubtask;
-            return true;
+            return DisStreamPartitionAssigner.assign(partition, numParallelSubtasks) == indexOfThisSubtask;
         }
 
         return false;
@@ -239,8 +233,6 @@ public abstract class AbstractPartitionDiscoverer {
 
     /** Fetch the list of all partitions for a specific topics list from Kafka. */
     protected abstract List<DisStreamPartition> getAllPartitionsForTopics(List<String> topics) throws WakeupException;
-
-    protected abstract List<DisStreamPartition> getAllPartitions() throws WakeupException;
 
     // ------------------------------------------------------------------------
     //  Utilities
