@@ -18,3 +18,7 @@
 # 1.0.6
 - Bugfixs
   * 修复在部分 Rebalance 场景下分区 Offset 可能被重置为 `earliest` 对应的 Offset 的问题
+
+# 2.0.0
+- Features
+  * 适配 Flink 1.10.0 版本
