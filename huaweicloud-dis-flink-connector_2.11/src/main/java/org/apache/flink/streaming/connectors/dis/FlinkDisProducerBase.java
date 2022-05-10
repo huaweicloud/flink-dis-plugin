@@ -25,6 +25,7 @@ import com.huaweicloud.dis.adapter.kafka.common.PartitionInfo;
 import com.huaweicloud.dis.adapter.kafka.common.serialization.ByteArraySerializer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.java.ClosureCleaner;
 import org.apache.flink.configuration.Configuration;
@@ -132,7 +133,9 @@ public abstract class FlinkDisProducerBase<IN> extends RichSinkFunction<IN> impl
 		requireNonNull(defaultStreamName, "StreamName not set");
 		requireNonNull(serializationSchema, "serializationSchema not set");
 		requireNonNull(disConfig, "disConfig not set");
-		ClosureCleaner.clean(customPartitioner, true);
+		//ClosureCleaner.clean(customPartitioner, true);
+		ClosureCleaner.clean(customPartitioner, ExecutionConfig.ClosureCleanerLevel.TOP_LEVEL,  true);
+
 		ClosureCleaner.ensureSerializable(serializationSchema);
 
 		this.defaultStreamName = defaultStreamName;
