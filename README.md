@@ -4,7 +4,7 @@ HuaweiCloud DIS Flink Connector is a connector provided by the Data Access Servi
 
 Quick Links:
 - issue
-- [DIS Homepage](https://www.huaweicloud.com/en-us/product/dis.html), or Chinese language site [数据接入服务](https://www.huaweicloud.com/product/dis.html)
+- [DIS Homepage](https://www.huaweicloud.com/intl/en-us/product/dis.html), or Chinese language site [数据接入服务](https://www.huaweicloud.com/product/dis.html)
 
 ## Getting Started
 ### Requirements
