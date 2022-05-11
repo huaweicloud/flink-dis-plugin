@@ -16,22 +16,25 @@ The recommended way to use the DIS SDK for DIS Flink Connector in your project i
 
 #### For Flink 1.10
 
+```
 <dependency>
     <groupId>com.huaweicloud.dis</groupId>
     <artifactId>huaweicloud-dis-flink-connector_2.11</artifactId>
     <version>2.0.0</version>
     <scope>compile</scope>
 </dependency>
+```
 
 #### For Flink 1.5
 
+```
 <dependency>
     <groupId>com.huaweicloud.dis</groupId>
     <artifactId>huaweicloud-dis-flink-connector_2.11</artifactId>
     <version>1.0.6</version>
     <scope>compile</scope>
 </dependency>
-
+```
 
 ## Building From Source
 Once you check out the code from GitHub, you can build it using Maven:
