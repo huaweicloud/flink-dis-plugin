@@ -24,7 +24,6 @@ import com.huaweicloud.dis.adapter.kafka.common.MetricName;
 import com.huaweicloud.dis.adapter.kafka.common.TopicPartition;
 import com.huaweicloud.dis.exception.DISClientException;
 import com.huaweicloud.dis.exception.DISPartitionExpiredException;
-import com.huaweicloud.dis.exception.DISPartitionNotExistsException;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -54,7 +53,7 @@ import static org.apache.flink.util.PropertiesUtil.getLong;
  * to the KafkaConsumer calls that change signature.
  */
 @Internal
-public class DisConsumerThread extends Thread {
+public class DisConsumerThread<T> extends Thread {
 
 	/** Logger for this consumer. */
 	private final Logger log;
@@ -69,13 +68,7 @@ public class DisConsumerThread extends Thread {
 	private final Properties kafkaProperties;
 
 	/** The queue of unassigned partitions that we need to assign to the DIS Kafka consumer. */
-	private final ClosableBlockingQueue<DisStreamPartitionState<TopicPartition>> unassignedPartitionsQueue;
-
-    /** The queue of unassigned partitions that we need to assign to the DIS Kafka consumer. */
-    private final ClosableBlockingQueue<DisStreamPartitionState<TopicPartition>> unrevokedPartitionsQueue;
-    
-	/** The indirections on KafkaConsumer methods, for cases where KafkaConsumer compatibility is broken. */
-	private final DisConsumerCallBridge consumerCallBridge;
+	private final ClosableBlockingQueue<DisStreamPartitionState<T, TopicPartition>> unassignedPartitionsQueue;
 
 	/** The maximum number of milliseconds to wait for a fetch batch. */
 	private final long pollTimeout;
@@ -121,9 +114,7 @@ public class DisConsumerThread extends Thread {
 			Logger log,
 			Handover handover,
 			Properties kafkaProperties,
-			ClosableBlockingQueue<DisStreamPartitionState<TopicPartition>> unassignedPartitionsQueue,
-            ClosableBlockingQueue<DisStreamPartitionState<TopicPartition>> unrevokedPartitionsQueue,
-			DisConsumerCallBridge consumerCallBridge,
+			ClosableBlockingQueue<DisStreamPartitionState<T, TopicPartition>> unassignedPartitionsQueue,
 			String threadName,
 			long pollTimeout,
 			boolean useMetrics,
@@ -138,10 +129,8 @@ public class DisConsumerThread extends Thread {
 		this.kafkaProperties = checkNotNull(kafkaProperties);
 		this.consumerMetricGroup = checkNotNull(consumerMetricGroup);
 		this.subtaskMetricGroup = checkNotNull(subtaskMetricGroup);
-		this.consumerCallBridge = checkNotNull(consumerCallBridge);
 
 		this.unassignedPartitionsQueue = checkNotNull(unassignedPartitionsQueue);
-        this.unrevokedPartitionsQueue  = checkNotNull(unrevokedPartitionsQueue);
 		this.pollTimeout = pollTimeout;
 		this.useMetrics = useMetrics;
 
@@ -205,8 +194,8 @@ public class DisConsumerThread extends Thread {
 			// reused variable to hold found unassigned new partitions.
 			// found partitions are not carried across loops using this variable;
 			// they are carried across via re-adding them to the unassigned partitions queue
-			List<DisStreamPartitionState<TopicPartition>> newPartitions;
-			List<DisStreamPartitionState<TopicPartition>> revokedPartitions;
+			List<DisStreamPartitionState<T, TopicPartition>> newPartitions;
+			List<DisStreamPartitionState<T, TopicPartition>> revokedPartitions;
 
 			// main fetch loop
 			while (running) {
@@ -239,17 +228,9 @@ public class DisConsumerThread extends Thread {
 						// we don't block indefinitely
 						newPartitions = unassignedPartitionsQueue.getBatchBlocking();
 					}
-                    revokedPartitions = unrevokedPartitionsQueue.pollBatch();
 
-                    if (newPartitions != null || revokedPartitions != null) {
-                        if (newPartitions == null) {
-                            newPartitions = Collections.emptyList();
-                        }
-
-                        if (revokedPartitions == null) {
-                            revokedPartitions = Collections.emptyList();
-                        }
-                        reassignPartitions(newPartitions, revokedPartitions);
+                    if (newPartitions != null) {
+                        reassignPartitions(newPartitions);
                     }
 					
 				} catch (AbortedReassignmentException e) {
@@ -412,9 +393,10 @@ public class DisConsumerThread extends Thread {
 	 * <p>This method is exposed for testing purposes.
 	 */
 	@VisibleForTesting
-	void reassignPartitions(List<DisStreamPartitionState<TopicPartition>> newPartitions, 
-                            List<DisStreamPartitionState<TopicPartition>> revokedPartitions) throws Exception {
-        
+	void reassignPartitions(List<DisStreamPartitionState<T, TopicPartition>> newPartitions) throws Exception {
+		if (newPartitions.size() == 0) {
+			return;
+		}
 		hasAssignedPartitions = true;
 		boolean reassignmentStarted = false;
 
@@ -433,23 +415,17 @@ public class DisConsumerThread extends Thread {
 				oldPartitionAssignmentsToPosition.put(oldPartition, consumerTmp.position(oldPartition));
 			}
 
-            Map<TopicPartition, Long> oldPartitionAssignmentsToPositionTemp = new HashMap<>(oldPartitionAssignmentsToPosition);
-            for (DisStreamPartitionState<TopicPartition> revokedPartition : revokedPartitions) {
-                oldPartitionAssignmentsToPositionTemp.remove(revokedPartition.getKafkaPartitionHandle());
-            }
-            
-            final List<TopicPartition> newPartitionAssignments =
-				new ArrayList<>(newPartitions.size() + oldPartitionAssignmentsToPositionTemp.size());
-			newPartitionAssignments.addAll(oldPartitionAssignmentsToPositionTemp.keySet());
+			final List<TopicPartition> newPartitionAssignments =
+				new ArrayList<>(newPartitions.size() + oldPartitionAssignmentsToPosition.size());
+			newPartitionAssignments.addAll(oldPartitionAssignmentsToPosition.keySet());
 			newPartitionAssignments.addAll(convertKafkaPartitions(newPartitions));
 
 			// reassign with the new partitions
-			consumerCallBridge.assignPartitions(consumerTmp, newPartitionAssignments);
-
-            reassignmentStarted = true;
+			consumerTmp.assign(newPartitionAssignments);
+			reassignmentStarted = true;
 
 			// old partitions should be seeked to their previous position
-			for (Map.Entry<TopicPartition, Long> oldPartitionToPosition : oldPartitionAssignmentsToPositionTemp.entrySet()) {
+			for (Map.Entry<TopicPartition, Long> oldPartitionToPosition : oldPartitionAssignmentsToPosition.entrySet()) {
 				consumerTmp.seek(oldPartitionToPosition.getKey(), oldPartitionToPosition.getValue());
 			}
 
@@ -459,12 +435,12 @@ public class DisConsumerThread extends Thread {
 			//       been replaced with actual offset values yet, or
 			//   (3) the partition was newly discovered after startup;
 			// replace those with actual offsets, according to what the sentinel value represent.
-			for (DisStreamPartitionState<TopicPartition> newPartitionState : newPartitions) {
+			for (DisStreamPartitionState<T, TopicPartition> newPartitionState : newPartitions) {
 				if (newPartitionState.getOffset() == DisStreamPartitionStateSentinel.EARLIEST_OFFSET) {
-					consumerCallBridge.seekPartitionToBeginning(consumerTmp, newPartitionState.getKafkaPartitionHandle());
+					consumerTmp.seekToBeginning(Collections.singletonList(newPartitionState.getKafkaPartitionHandle()));
 					newPartitionState.setOffset(consumerTmp.position(newPartitionState.getKafkaPartitionHandle()) - 1);
 				} else if (newPartitionState.getOffset() == DisStreamPartitionStateSentinel.LATEST_OFFSET) {
-					consumerCallBridge.seekPartitionToEnd(consumerTmp, newPartitionState.getKafkaPartitionHandle());
+					consumerTmp.seekToEnd(Collections.singletonList(newPartitionState.getKafkaPartitionHandle()));
 					newPartitionState.setOffset(consumerTmp.position(newPartitionState.getKafkaPartitionHandle()) - 1);
 				} else if (newPartitionState.getOffset() == DisStreamPartitionStateSentinel.GROUP_OFFSET) {
 					// the KafkaConsumer by default will automatically seek the consumer position
@@ -475,7 +451,6 @@ public class DisConsumerThread extends Thread {
 					consumerTmp.seek(newPartitionState.getKafkaPartitionHandle(), newPartitionState.getOffset() + 1);
 				}
 			}
-		// } catch (WakeupException e) {
 		} catch (DISClientException e) {
 			// a WakeupException may be thrown if the consumer was invoked wakeup()
 			// before it was isolated for the reassignment. In this case, we abort the
@@ -487,8 +462,7 @@ public class DisConsumerThread extends Thread {
 				// if reassignment had already started and affected the consumer,
 				// we do a full roll back so that it is as if it was left untouched
 				if (reassignmentStarted) {
-					consumerCallBridge.assignPartitions(
-							this.consumer, new ArrayList<>(oldPartitionAssignmentsToPosition.keySet()));
+					this.consumer.assign(new ArrayList<>(oldPartitionAssignmentsToPosition.keySet()));
 
 					for (Map.Entry<TopicPartition, Long> oldPartitionToPosition : oldPartitionAssignmentsToPosition.entrySet()) {
 						this.consumer.seek(oldPartitionToPosition.getKey(), oldPartitionToPosition.getValue());
@@ -500,13 +474,10 @@ public class DisConsumerThread extends Thread {
 				hasBufferedWakeup = false;
 
 				// re-add all new partitions back to the unassigned partitions queue to be picked up again
-				for (DisStreamPartitionState<TopicPartition> newPartition : newPartitions) {
+				for (DisStreamPartitionState<T, TopicPartition> newPartition : newPartitions) {
 					unassignedPartitionsQueue.add(newPartition);
 				}
 
-                for (DisStreamPartitionState<TopicPartition> revokedPartition : revokedPartitions) {
-                    unrevokedPartitionsQueue.add(revokedPartition);
-                }
 				// this signals the main fetch loop to continue through the loop
 				throw new AbortedReassignmentException();
 			}
@@ -533,9 +504,9 @@ public class DisConsumerThread extends Thread {
 	//  Utilities
 	// ------------------------------------------------------------------------
 
-	private static List<TopicPartition> convertKafkaPartitions(List<DisStreamPartitionState<TopicPartition>> partitions) {
+	private static <T> List<TopicPartition> convertKafkaPartitions(List<DisStreamPartitionState<T, TopicPartition>> partitions) {
 		ArrayList<TopicPartition> result = new ArrayList<>(partitions.size());
-		for (DisStreamPartitionState<TopicPartition> p : partitions) {
+		for (DisStreamPartitionState<T, TopicPartition> p : partitions) {
 			result.add(p.getKafkaPartitionHandle());
 		}
 		return result;

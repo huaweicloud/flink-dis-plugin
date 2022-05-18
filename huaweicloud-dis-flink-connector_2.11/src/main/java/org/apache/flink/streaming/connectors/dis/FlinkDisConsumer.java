@@ -26,17 +26,14 @@ import com.huaweicloud.dis.adapter.kafka.clients.consumer.OffsetAndTimestamp;
 import com.huaweicloud.dis.adapter.kafka.common.TopicPartition;
 import com.huaweicloud.dis.adapter.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.streaming.connectors.dis.config.OffsetCommitMode;
 import org.apache.flink.streaming.connectors.dis.config.RebalanceMode;
 import org.apache.flink.streaming.connectors.dis.internals.*;
-import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
-import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchemaWrapper;
 import org.apache.flink.util.PropertiesUtil;
 import org.apache.flink.util.SerializedValue;
 import org.slf4j.Logger;
@@ -107,7 +104,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 * @param props
 	 *           The properties used to configure the DIS consumer client.
 	 */
-	public FlinkDisConsumer(String stream, KeyedDeserializationSchema<T> deserializer, Properties props) {
+	public FlinkDisConsumer(String stream, DisDeserializationSchema<T> deserializer, Properties props) {
 		this(stream, deserializer, Utils.newDisConfig(props));
 	}
 
@@ -124,7 +121,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 * @param disConfig
 	 *           The properties used to configure the DIS consumer client.
 	 */
-	public FlinkDisConsumer(String stream, KeyedDeserializationSchema<T> deserializer, DISConfig disConfig) {
+	public FlinkDisConsumer(String stream, DisDeserializationSchema<T> deserializer, DISConfig disConfig) {
 		this(Collections.singletonList(stream), deserializer, disConfig);
 	}
 
@@ -157,7 +154,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 *           The properties that are used to configure both the fetcher and the offset handler.
 	 */
 	public FlinkDisConsumer(List<String> streams, DeserializationSchema<T> deserializer, DISConfig disConfig) {
-		this(streams, new KeyedDeserializationSchemaWrapper<>(deserializer), disConfig);
+		this(streams, new DisDeserializationSchemaWrapper<>(deserializer), disConfig);
 	}
 
 	/**
@@ -172,7 +169,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 * @param props
 	 *           The properties that are used to configure both the fetcher and the offset handler.
 	 */
-	public FlinkDisConsumer(List<String> streams, KeyedDeserializationSchema<T> deserializer, Properties props) {
+	public FlinkDisConsumer(List<String> streams, DisDeserializationSchema<T> deserializer, Properties props) {
 		this(streams, deserializer, Utils.newDisConfig(props));
 	}
 
@@ -188,7 +185,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 * @param disConfig
 	 *           The properties that are used to configure both the fetcher and the offset handler.
 	 */
-	public FlinkDisConsumer(List<String> streams, KeyedDeserializationSchema<T> deserializer, DISConfig disConfig) {
+	public FlinkDisConsumer(List<String> streams, DisDeserializationSchema<T> deserializer, DISConfig disConfig) {
 		this(streams, null, deserializer, disConfig);
 	}
 
@@ -229,7 +226,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 */
 	@PublicEvolving
 	public FlinkDisConsumer(Pattern subscriptionPattern, DeserializationSchema<T> valueDeserializer, DISConfig disConfig) {
-		this(subscriptionPattern, new KeyedDeserializationSchemaWrapper<>(valueDeserializer), disConfig);
+		this(subscriptionPattern, new DisDeserializationSchemaWrapper<>(valueDeserializer), disConfig);
 	}
 
 	/**
@@ -251,7 +248,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 *           The properties used to configure the DIS consumer client.
 	 */
 	@PublicEvolving
-	public FlinkDisConsumer(Pattern subscriptionPattern, KeyedDeserializationSchema<T> deserializer, Properties props) {
+	public FlinkDisConsumer(Pattern subscriptionPattern, DisDeserializationSchema<T> deserializer, Properties props) {
 		this(subscriptionPattern, deserializer, Utils.newDisConfig(props));
 	}
 
@@ -274,14 +271,14 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	 *           The properties used to configure the DIS consumer client.
 	 */
 	@PublicEvolving
-	public FlinkDisConsumer(Pattern subscriptionPattern, KeyedDeserializationSchema<T> deserializer, DISConfig disConfig) {
+	public FlinkDisConsumer(Pattern subscriptionPattern, DisDeserializationSchema<T> deserializer, DISConfig disConfig) {
 		this(null, subscriptionPattern, deserializer, disConfig);
 	}
 
     private FlinkDisConsumer(
         List<String> streams,
         Pattern subscriptionPattern,
-        KeyedDeserializationSchema<T> deserializer,
+        DisDeserializationSchema<T> deserializer,
         DISConfig disConfig) {
 
         super(
@@ -313,8 +310,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 	protected AbstractFetcher<T, ?> createFetcher(
 			SourceFunction.SourceContext<T> sourceContext,
 			Map<DisStreamPartition, Long> assignedPartitionsWithInitialOffsets,
-			SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic,
-			SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated,
+			SerializedValue<WatermarkStrategy<T>> watermarkStrategy,
 			StreamingRuntimeContext runtimeContext,
 			OffsetCommitMode offsetCommitMode,
 			MetricGroup consumerMetricGroup,
@@ -329,8 +325,7 @@ public class FlinkDisConsumer<T> extends FlinkDisConsumerBase<T>
 		return new DisFetcher<>(
 				sourceContext,
 				assignedPartitionsWithInitialOffsets,
-				watermarksPeriodic,
-				watermarksPunctuated,
+				watermarkStrategy,
 				runtimeContext.getProcessingTimeService(),
 				runtimeContext.getExecutionConfig().getAutoWatermarkInterval(),
 				runtimeContext.getUserCodeClassLoader(),

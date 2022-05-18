@@ -22,3 +22,7 @@
 # 2.0.0
 - Features
   * 适配 Flink 1.10.0 版本
+
+# 2.0.1
+- Features
+  * 适配 Flink 1.11.0 版本

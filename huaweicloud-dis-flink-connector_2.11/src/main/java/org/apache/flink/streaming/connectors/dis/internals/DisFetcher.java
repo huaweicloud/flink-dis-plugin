@@ -23,21 +23,24 @@ import com.huaweicloud.dis.adapter.kafka.clients.consumer.ConsumerRecords;
 import com.huaweicloud.dis.adapter.kafka.clients.consumer.OffsetAndMetadata;
 import com.huaweicloud.dis.adapter.kafka.common.TopicPartition;
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext;
+import org.apache.flink.streaming.connectors.dis.DisDeserializationSchema;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
-import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
+import org.apache.flink.util.Collector;
 import org.apache.flink.util.SerializedValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
+
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Queue;
 
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -54,7 +57,10 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 	// ------------------------------------------------------------------------
 
 	/** The schema to convert between Kafka's byte messages, and Flink's objects. */
-	private final KeyedDeserializationSchema<T> deserializer;
+	private final DisDeserializationSchema<T> deserializer;
+
+	/** A collector to emit records in batch (bundle). **/
+	private final DisCollector disCollector;
 
 	/** The handover of data and exceptions between the consumer thread and the task thread. */
 	private final Handover handover;
@@ -70,13 +76,12 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 	public DisFetcher(
 			SourceContext<T> sourceContext,
 			Map<DisStreamPartition, Long> assignedPartitionsWithInitialOffsets,
-			SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic,
-			SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated,
+			SerializedValue<WatermarkStrategy<T>> watermarkStrategy,
 			ProcessingTimeService processingTimeProvider,
 			long autoWatermarkInterval,
 			ClassLoader userCodeClassLoader,
 			String taskNameWithSubtasks,
-			KeyedDeserializationSchema<T> deserializer,
+			DisDeserializationSchema<T> deserializer,
 			Properties kafkaProperties,
 			long pollTimeout,
 			MetricGroup subtaskMetricGroup,
@@ -85,8 +90,7 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 		super(
 				sourceContext,
 				assignedPartitionsWithInitialOffsets,
-				watermarksPeriodic,
-				watermarksPunctuated,
+				watermarkStrategy,
 				processingTimeProvider,
 				autoWatermarkInterval,
 				userCodeClassLoader,
@@ -101,13 +105,12 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 				handover,
 				kafkaProperties,
 				unassignedPartitionsQueue,
-                unrevokedPartitionsQueue,
-				createCallBridge(),
 				getFetcherName() + " for " + taskNameWithSubtasks,
 				pollTimeout,
 				useMetrics,
 				consumerMetricGroup,
 				subtaskMetricGroup);
+		this.disCollector = new DisCollector();
 	}
 
 	// ------------------------------------------------------------------------
@@ -128,26 +131,12 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 				final ConsumerRecords<byte[], byte[]> records = handover.pollNext();
 
 				// get the records for each topic partition
-				for (DisStreamPartitionState<TopicPartition> partition : subscribedPartitionStates()) {
+				for (DisStreamPartitionState<T, TopicPartition> partition : subscribedPartitionStates()) {
 
 					List<ConsumerRecord<byte[], byte[]>> partitionRecords =
 							records.records(partition.getKafkaPartitionHandle());
 
-					for (ConsumerRecord<byte[], byte[]> record : partitionRecords) {
-						final T value = deserializer.deserialize(
-								record.key(), record.value(),
-								record.topic(), record.partition(), record.offset());
-
-						if (deserializer.isEndOfStream(value)) {
-							// end of stream signaled
-							running = false;
-							break;
-						}
-
-						// emit the actual record. this also updates offset state atomically
-						// and deals with timestamps and watermark generation
-						emitRecord(value, partition, record.offset(), record);
-					}
+					partitionConsumerRecordsHandler(partitionRecords, partition);
 				}
 			}
 		}
@@ -175,21 +164,6 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 		consumerThread.shutdown();
 	}
 
-	// ------------------------------------------------------------------------
-	//  The below methods are overridden in the 0.10 fetcher, which otherwise
-	//   reuses most of the 0.9 fetcher behavior
-	// ------------------------------------------------------------------------
-
-	protected void emitRecord(
-			T record,
-			DisStreamPartitionState<TopicPartition> partition,
-			long offset,
-			@SuppressWarnings("UnusedParameters") ConsumerRecord<?, ?> consumerRecord) throws Exception {
-
-		// the 0.9 Fetcher does not try to extract a timestamp
-        emitRecordWithTimestamp(record, partition, offset, consumerRecord.timestamp());
-	}
-
 	/**
 	 * Gets the name of this fetcher, for thread naming and logging purposes.
 	 */
@@ -197,8 +171,27 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 		return "Dis Fetcher";
 	}
 
-	protected DisConsumerCallBridge createCallBridge() {
-		return new DisConsumerCallBridge();
+	protected void partitionConsumerRecordsHandler(
+		List<ConsumerRecord<byte[], byte[]>> partitionRecords,
+		DisStreamPartitionState<T, TopicPartition> partition) throws Exception {
+
+		for (ConsumerRecord<byte[], byte[]> record : partitionRecords) {
+			deserializer.deserialize(record, disCollector);
+
+			// emit the actual records. this also updates offset state atomically and emits
+			// watermarks
+			emitRecordsWithTimestamps(
+				disCollector.getRecords(),
+				partition,
+				record.offset(),
+				record.timestamp());
+
+			if (disCollector.isEndOfStreamSignalled()) {
+				// end of stream signaled
+				running = false;
+				break;
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------------
@@ -216,11 +209,11 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 			@Nonnull DisCommitCallback commitCallback) throws Exception {
 
 		@SuppressWarnings("unchecked")
-		List<DisStreamPartitionState<TopicPartition>> partitions = subscribedPartitionStates();
+		List<DisStreamPartitionState<T, TopicPartition>> partitions = subscribedPartitionStates();
 
 		Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = new HashMap<>(partitions.size());
 
-		for (DisStreamPartitionState<TopicPartition> partition : partitions) {
+		for (DisStreamPartitionState<T, TopicPartition> partition : partitions) {
 			Long lastProcessedOffset = offsets.get(partition.getKafkaTopicPartition());
 			if (lastProcessedOffset != null) {
 				checkState(lastProcessedOffset >= 0, "Illegal offset value to commit");
@@ -236,5 +229,34 @@ public class DisFetcher<T> extends AbstractFetcher<T, TopicPartition> {
 
 		// record the work to be committed by the main consumer thread and make sure the consumer notices that
 		consumerThread.setOffsetsToCommit(offsetsToCommit, commitCallback);
+	}
+
+	private class DisCollector implements Collector<T> {
+		private final Queue<T> records = new ArrayDeque<>();
+
+		private boolean endOfStreamSignalled = false;
+
+		@Override
+		public void collect(T record) {
+			// do not emit subsequent elements if the end of the stream reached
+			if (endOfStreamSignalled || deserializer.isEndOfStream(record)) {
+				endOfStreamSignalled = true;
+				return;
+			}
+			records.add(record);
+		}
+
+		public Queue<T> getRecords() {
+			return records;
+		}
+
+		public boolean isEndOfStreamSignalled() {
+			return endOfStreamSignalled;
+		}
+
+		@Override
+		public void close() {
+
+		}
 	}
 }

@@ -19,10 +19,11 @@
 package org.apache.flink.streaming.connectors.dis.internals;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.eventtime.WatermarkOutput;
+import org.apache.flink.api.common.eventtime.WatermarkOutputMultiplexer;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.connectors.dis.config.OffsetCommitMode;
@@ -36,6 +37,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
@@ -57,20 +59,30 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public abstract class AbstractFetcher<T, KPH> {
 
 	private static final int NO_TIMESTAMPS_WATERMARKS = 0;
-	private static final int PERIODIC_WATERMARKS = 1;
-	private static final int PUNCTUATED_WATERMARKS = 2;
+	private static final int WITH_WATERMARK_GENERATOR = 1;
 
 	// ------------------------------------------------------------------------
 
 	/** The source context to emit records and watermarks to. */
 	protected final SourceContext<T> sourceContext;
 
+	/**
+	 * Wrapper around our SourceContext for allowing the {@link org.apache.flink.api.common.eventtime.WatermarkGenerator}
+	 * to emit watermarks and mark idleness.
+	 */
+	protected final WatermarkOutput watermarkOutput;
+
+	/**
+	 * {@link WatermarkOutputMultiplexer} for supporting per-partition watermark generation.
+	 */
+	private final WatermarkOutputMultiplexer watermarkOutputMultiplexer;
+
 	/** The lock that guarantees that record emission and state updates are atomic,
 	 * from the view of taking a checkpoint. */
 	private final Object checkpointLock;
 
 	/** All partitions (and their state) that this fetcher is subscribed to. */
-	private final List<DisStreamPartitionState<KPH>> subscribedPartitionStates;
+	private final List<DisStreamPartitionState<T, KPH>> subscribedPartitionStates;
 
 	/**
 	 * Queue of partitions that are not yet assigned to any Kafka clients for consuming.
@@ -81,26 +93,17 @@ public abstract class AbstractFetcher<T, KPH> {
 	 * <p>All partitions added to this queue are guaranteed to have been added
 	 * to {@link #subscribedPartitionStates} already.
 	 */
-	protected final ClosableBlockingQueue<DisStreamPartitionState<KPH>> unassignedPartitionsQueue;
+	protected final ClosableBlockingQueue<DisStreamPartitionState<T, KPH>> unassignedPartitionsQueue;
 
-    protected final ClosableBlockingQueue<DisStreamPartitionState<KPH>> unrevokedPartitionsQueue;
-    
 	/** The mode describing whether the fetcher also generates timestamps and watermarks. */
 	private final int timestampWatermarkMode;
 
 	/**
-	 * Optional timestamp extractor / watermark generator that will be run per Kafka partition,
-	 * to exploit per-partition timestamp characteristics.
-	 * The assigner is kept in serialized form, to deserialize it into multiple copies.
+	 * Optional watermark strategy that will be run per Kafka partition, to exploit per-partition
+	 * timestamp characteristics. The watermark strategy is kept in serialized form, to deserialize
+	 * it into multiple copies.
 	 */
-	private final SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic;
-
-	/**
-	 * Optional timestamp extractor / watermark generator that will be run per Kafka partition,
-	 * to exploit per-partition timestamp characteristics.
-	 * The assigner is kept in serialized form, to deserialize it into multiple copies.
-	 */
-	private final SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated;
+	private final SerializedValue<WatermarkStrategy<T>> watermarkStrategy;
 
 	/** User class loader used to deserialize watermark assigners. */
 	private final ClassLoader userCodeClassLoader;
@@ -121,7 +124,7 @@ public abstract class AbstractFetcher<T, KPH> {
 
 	/**
 	 * The metric group which all metrics for the consumer should be registered to.
-	 * This metric group is defined under the user scope {@link DISKafkaConsumerMetricConstants#KAFKA_CONSUMER_METRICS_GROUP}.
+	 * This metric group is defined under the user scope {@link DISKafkaConsumerMetricConstants#DIS_CONSUMER_METRICS_GROUP}.
 	 */
 	private final MetricGroup consumerMetricGroup;
 
@@ -134,14 +137,15 @@ public abstract class AbstractFetcher<T, KPH> {
 	protected AbstractFetcher(
 			SourceContext<T> sourceContext,
 			Map<DisStreamPartition, Long> seedPartitionsWithInitialOffsets,
-			SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic,
-			SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated,
+			SerializedValue<WatermarkStrategy<T>> watermarkStrategy,
 			ProcessingTimeService processingTimeProvider,
 			long autoWatermarkInterval,
 			ClassLoader userCodeClassLoader,
 			MetricGroup consumerMetricGroup,
 			boolean useMetrics) throws Exception {
 		this.sourceContext = checkNotNull(sourceContext);
+		this.watermarkOutput = new SourceContextWatermarkOutputAdapter<>(sourceContext);
+		this.watermarkOutputMultiplexer = new WatermarkOutputMultiplexer(watermarkOutput);
 		this.checkpointLock = sourceContext.getCheckpointLock();
 		this.userCodeClassLoader = checkNotNull(userCodeClassLoader);
 
@@ -150,33 +154,21 @@ public abstract class AbstractFetcher<T, KPH> {
 		this.legacyCurrentOffsetsMetricGroup = consumerMetricGroup.addGroup(LEGACY_CURRENT_OFFSETS_METRICS_GROUP);
 		this.legacyCommittedOffsetsMetricGroup = consumerMetricGroup.addGroup(LEGACY_COMMITTED_OFFSETS_METRICS_GROUP);
 
-		// figure out what we watermark mode we will be using
-		this.watermarksPeriodic = watermarksPeriodic;
-		this.watermarksPunctuated = watermarksPunctuated;
+		this.watermarkStrategy = watermarkStrategy;
 
-		if (watermarksPeriodic == null) {
-			if (watermarksPunctuated == null) {
-				// simple case, no watermarks involved
-				timestampWatermarkMode = NO_TIMESTAMPS_WATERMARKS;
-			} else {
-				timestampWatermarkMode = PUNCTUATED_WATERMARKS;
-			}
+		if (watermarkStrategy == null) {
+			timestampWatermarkMode = NO_TIMESTAMPS_WATERMARKS;
 		} else {
-			if (watermarksPunctuated == null) {
-				timestampWatermarkMode = PERIODIC_WATERMARKS;
-			} else {
-				throw new IllegalArgumentException("Cannot have both periodic and punctuated watermarks");
-			}
+			timestampWatermarkMode = WITH_WATERMARK_GENERATOR;
 		}
 
         this.unassignedPartitionsQueue = new ClosableBlockingQueue<>();
-        this.unrevokedPartitionsQueue = new ClosableBlockingQueue<>();
+
 		// initialize subscribed partition states with seed partitions
 		this.subscribedPartitionStates = createPartitionStateHolders(
 				seedPartitionsWithInitialOffsets,
 				timestampWatermarkMode,
-				watermarksPeriodic,
-				watermarksPunctuated,
+				watermarkStrategy,
 				userCodeClassLoader);
 
 		// check that all seed partition states have a defined offset
@@ -187,7 +179,7 @@ public abstract class AbstractFetcher<T, KPH> {
 		}
 
 		// all seed partitions are not assigned yet, so should be added to the unassigned partitions queue
-		for (DisStreamPartitionState<KPH> partition : subscribedPartitionStates) {
+		for (DisStreamPartitionState<T, KPH> partition : subscribedPartitionStates) {
 			unassignedPartitionsQueue.add(partition);
 		}
 
@@ -197,13 +189,13 @@ public abstract class AbstractFetcher<T, KPH> {
 		}
 
 		// if we have periodic watermarks, kick off the interval scheduler
-		if (timestampWatermarkMode == PERIODIC_WATERMARKS) {
-			@SuppressWarnings("unchecked")
-			PeriodicWatermarkEmitter periodicEmitter = new PeriodicWatermarkEmitter(
-					subscribedPartitionStates,
-					sourceContext,
-					processingTimeProvider,
-					autoWatermarkInterval);
+		if (timestampWatermarkMode == WITH_WATERMARK_GENERATOR && autoWatermarkInterval > 0) {
+			PeriodicWatermarkEmitter<T, KPH> periodicEmitter = new PeriodicWatermarkEmitter<>(
+				checkpointLock,
+				subscribedPartitionStates,
+				watermarkOutputMultiplexer,
+				processingTimeProvider,
+				autoWatermarkInterval);
 
 			periodicEmitter.start();
 		}
@@ -223,19 +215,18 @@ public abstract class AbstractFetcher<T, KPH> {
 	 * @param newPartitions discovered partitions to add
 	 */
 	public void addDiscoveredPartitions(List<DisStreamPartition> newPartitions) throws IOException, ClassNotFoundException {
-		List<DisStreamPartitionState<KPH>> newPartitionStates = createPartitionStateHolders(
+		List<DisStreamPartitionState<T, KPH>> newPartitionStates = createPartitionStateHolders(
 				newPartitions,
 				DisStreamPartitionStateSentinel.EARLIEST_OFFSET,
 				timestampWatermarkMode,
-				watermarksPeriodic,
-				watermarksPunctuated,
+				watermarkStrategy,
 				userCodeClassLoader);
 
 		if (useMetrics) {
 			registerOffsetMetrics(consumerMetricGroup, newPartitionStates);
 		}
 
-		for (DisStreamPartitionState<KPH> newPartitionState : newPartitionStates) {
+		for (DisStreamPartitionState<T, KPH> newPartitionState : newPartitionStates) {
 			// the ordering is crucial here; first register the state holder, then
 			// push it to the partitions queue to be read
 			subscribedPartitionStates.add(newPartitionState);
@@ -252,7 +243,7 @@ public abstract class AbstractFetcher<T, KPH> {
 	 *
 	 * @return All subscribed partitions.
 	 */
-	protected final List<DisStreamPartitionState<KPH>> subscribedPartitionStates() {
+	protected final List<DisStreamPartitionState<T, KPH>> subscribedPartitionStates() {
 		return subscribedPartitionStates;
 	}
 
@@ -326,7 +317,7 @@ public abstract class AbstractFetcher<T, KPH> {
 		assert Thread.holdsLock(checkpointLock);
 
 		HashMap<DisStreamPartition, Long> state = new HashMap<>(subscribedPartitionStates.size());
-		for (DisStreamPartitionState<KPH> partition : subscribedPartitionStates) {
+		for (DisStreamPartitionState<T, KPH> partition : subscribedPartitionStates) {
 			state.put(partition.getKafkaTopicPartition(), partition.getOffset());
 		}
 		return state;
@@ -337,156 +328,29 @@ public abstract class AbstractFetcher<T, KPH> {
 	// ------------------------------------------------------------------------
 
 	/**
-	 * Emits a record without attaching an existing timestamp to it.
-	 *
-	 * <p>Implementation Note: This method is kept brief to be JIT inlining friendly.
-	 * That makes the fast path efficient, the extended paths are called as separate methods.
-	 *
-	 * @param record The record to emit
-	 * @param partitionState The state of the Kafka partition from which the record was fetched
-	 * @param offset The offset of the record
-	 */
-	protected void emitRecord(T record, DisStreamPartitionState<KPH> partitionState, long offset) throws Exception {
-
-		if (record != null) {
-			if (timestampWatermarkMode == NO_TIMESTAMPS_WATERMARKS) {
-				// fast path logic, in case there are no watermarks
-
-				// emit the record, using the checkpoint lock to guarantee
-				// atomicity of record emission and offset state update
-				synchronized (checkpointLock) {
-					sourceContext.collect(record);
-					partitionState.setOffset(offset);
-				}
-			} else if (timestampWatermarkMode == PERIODIC_WATERMARKS) {
-				emitRecordWithTimestampAndPeriodicWatermark(record, partitionState, offset, Long.MIN_VALUE);
-			} else {
-				emitRecordWithTimestampAndPunctuatedWatermark(record, partitionState, offset, Long.MIN_VALUE);
-			}
-		} else {
-			// if the record is null, simply just update the offset state for partition
-			synchronized (checkpointLock) {
-				partitionState.setOffset(offset);
-			}
-		}
-	}
-
-	/**
 	 * Emits a record attaching a timestamp to it.
-	 *
-	 * <p>Implementation Note: This method is kept brief to be JIT inlining friendly.
-	 * That makes the fast path efficient, the extended paths are called as separate methods.
-	 *
-	 * @param record The record to emit
+	 *  @param records The records to emit
 	 * @param partitionState The state of the Kafka partition from which the record was fetched
-	 * @param offset The offset of the record
+	 * @param offset The offset of the corresponding Kafka record
+	 * @param kafkaEventTimestamp The timestamp of the Kafka record
 	 */
-	protected void emitRecordWithTimestamp(
-			T record, DisStreamPartitionState<KPH> partitionState, long offset, long timestamp) throws Exception {
-
-		if (record != null) {
-			if (timestampWatermarkMode == NO_TIMESTAMPS_WATERMARKS) {
-				// fast path logic, in case there are no watermarks generated in the fetcher
-
-				// emit the record, using the checkpoint lock to guarantee
-				// atomicity of record emission and offset state update
-				synchronized (checkpointLock) {
-					sourceContext.collectWithTimestamp(record, timestamp);
-					partitionState.setOffset(offset);
-				}
-			} else if (timestampWatermarkMode == PERIODIC_WATERMARKS) {
-				emitRecordWithTimestampAndPeriodicWatermark(record, partitionState, offset, timestamp);
-			} else {
-				emitRecordWithTimestampAndPunctuatedWatermark(record, partitionState, offset, timestamp);
-			}
-		} else {
-			// if the record is null, simply just update the offset state for partition
-			synchronized (checkpointLock) {
-				partitionState.setOffset(offset);
-			}
-		}
-	}
-
-	/**
-	 * Record emission, if a timestamp will be attached from an assigner that is
-	 * also a periodic watermark generator.
-	 */
-	private void emitRecordWithTimestampAndPeriodicWatermark(
-			T record, DisStreamPartitionState<KPH> partitionState, long offset, long kafkaEventTimestamp) {
-		@SuppressWarnings("unchecked")
-		final DisStreamPartitionStateWithPeriodicWatermarks<T, KPH> withWatermarksState =
-				(DisStreamPartitionStateWithPeriodicWatermarks<T, KPH>) partitionState;
-
-		// extract timestamp - this accesses/modifies the per-partition state inside the
-		// watermark generator instance, so we need to lock the access on the
-		// partition state. concurrent access can happen from the periodic emitter
-		final long timestamp;
-		//noinspection SynchronizationOnLocalVariableOrMethodParameter
-		synchronized (withWatermarksState) {
-			timestamp = withWatermarksState.getTimestampForRecord(record, kafkaEventTimestamp);
-		}
-
-		// emit the record with timestamp, using the usual checkpoint lock to guarantee
+	protected void emitRecordsWithTimestamps(
+		Queue<T> records,
+		DisStreamPartitionState<T, KPH> partitionState,
+		long offset,
+		long kafkaEventTimestamp) {
+		// emit the records, using the checkpoint lock to guarantee
 		// atomicity of record emission and offset state update
 		synchronized (checkpointLock) {
-			sourceContext.collectWithTimestamp(record, timestamp);
-			partitionState.setOffset(offset);
-		}
-	}
+			T record;
+			while ((record = records.poll()) != null) {
+				long timestamp = partitionState.extractTimestamp(record, kafkaEventTimestamp);
+				sourceContext.collectWithTimestamp(record, timestamp);
 
-	/**
-	 * Record emission, if a timestamp will be attached from an assigner that is
-	 * also a punctuated watermark generator.
-	 */
-	private void emitRecordWithTimestampAndPunctuatedWatermark(
-			T record, DisStreamPartitionState<KPH> partitionState, long offset, long kafkaEventTimestamp) {
-		@SuppressWarnings("unchecked")
-		final DisStreamPartitionStateWithPunctuatedWatermarks<T, KPH> withWatermarksState =
-				(DisStreamPartitionStateWithPunctuatedWatermarks<T, KPH>) partitionState;
-
-		// only one thread ever works on accessing timestamps and watermarks
-		// from the punctuated extractor
-		final long timestamp = withWatermarksState.getTimestampForRecord(record, kafkaEventTimestamp);
-		final Watermark newWatermark = withWatermarksState.checkAndGetNewWatermark(record, timestamp);
-
-		// emit the record with timestamp, using the usual checkpoint lock to guarantee
-		// atomicity of record emission and offset state update
-		synchronized (checkpointLock) {
-			sourceContext.collectWithTimestamp(record, timestamp);
-			partitionState.setOffset(offset);
-		}
-
-		// if we also have a new per-partition watermark, check if that is also a
-		// new cross-partition watermark
-		if (newWatermark != null) {
-			updateMinPunctuatedWatermark(newWatermark);
-		}
-	}
-
-	/**
-	 *Checks whether a new per-partition watermark is also a new cross-partition watermark.
-	 */
-	private void updateMinPunctuatedWatermark(Watermark nextWatermark) {
-		if (nextWatermark.getTimestamp() > maxWatermarkSoFar) {
-			long newMin = Long.MAX_VALUE;
-
-			for (DisStreamPartitionState<?> state : subscribedPartitionStates) {
-				@SuppressWarnings("unchecked")
-				final DisStreamPartitionStateWithPunctuatedWatermarks<T, KPH> withWatermarksState =
-						(DisStreamPartitionStateWithPunctuatedWatermarks<T, KPH>) state;
-
-				newMin = Math.min(newMin, withWatermarksState.getCurrentPartitionWatermark());
+				// this might emit a watermark, so do it after emitting the record
+				partitionState.onEvent(record, timestamp);
 			}
-
-			// double-check locking pattern
-			if (newMin > maxWatermarkSoFar) {
-				synchronized (checkpointLock) {
-					if (newMin > maxWatermarkSoFar) {
-						maxWatermarkSoFar = newMin;
-						sourceContext.emitWatermark(new Watermark(newMin));
-					}
-				}
-			}
+			partitionState.setOffset(offset);
 		}
 	}
 
@@ -498,16 +362,15 @@ public abstract class AbstractFetcher<T, KPH> {
 	 * Utility method that takes the topic partitions and creates the topic partition state
 	 * holders, depending on the timestamp / watermark mode.
 	 */
-	private List<DisStreamPartitionState<KPH>> createPartitionStateHolders(
+	private List<DisStreamPartitionState<T, KPH>> createPartitionStateHolders(
 			Map<DisStreamPartition, Long> partitionsToInitialOffsets,
 			int timestampWatermarkMode,
-			SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic,
-			SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated,
+			SerializedValue<WatermarkStrategy<T>> watermarkStrategy,
 			ClassLoader userCodeClassLoader) throws IOException, ClassNotFoundException {
 
 		// CopyOnWrite as adding discovered partitions could happen in parallel
 		// while different threads iterate the partitions list
-		List<DisStreamPartitionState<KPH>> partitionStates = new CopyOnWriteArrayList<>();
+		List<DisStreamPartitionState<T, KPH>> partitionStates = new CopyOnWriteArrayList<>();
 
 		switch (timestampWatermarkMode) {
 			case NO_TIMESTAMPS_WATERMARKS: {
@@ -515,7 +378,7 @@ public abstract class AbstractFetcher<T, KPH> {
 					// create the kafka version specific partition handle
 					KPH kafkaHandle = createKafkaPartitionHandle(partitionEntry.getKey());
 
-					DisStreamPartitionState<KPH> partitionState =
+					DisStreamPartitionState<T, KPH> partitionState =
 							new DisStreamPartitionState<>(partitionEntry.getKey(), kafkaHandle);
 					partitionState.setOffset(partitionEntry.getValue());
 
@@ -525,18 +388,29 @@ public abstract class AbstractFetcher<T, KPH> {
 				return partitionStates;
 			}
 
-			case PERIODIC_WATERMARKS: {
+			case WITH_WATERMARK_GENERATOR: {
 				for (Map.Entry<DisStreamPartition, Long> partitionEntry : partitionsToInitialOffsets.entrySet()) {
-					KPH kafkaHandle = createKafkaPartitionHandle(partitionEntry.getKey());
+					final DisStreamPartition kafkaTopicPartition = partitionEntry.getKey();
+					KPH kafkaHandle = createKafkaPartitionHandle(kafkaTopicPartition);
+					WatermarkStrategy<T> deserializedWatermarkStrategy = watermarkStrategy.deserializeValue(
+						userCodeClassLoader);
 
-					AssignerWithPeriodicWatermarks<T> assignerInstance =
-							watermarksPeriodic.deserializeValue(userCodeClassLoader);
+					// the format of the ID does not matter, as long as it is unique
+					final String partitionId = kafkaTopicPartition.getTopic() + '-' + kafkaTopicPartition.getPartition();
+					watermarkOutputMultiplexer.registerNewOutput(partitionId);
+					WatermarkOutput immediateOutput =
+						watermarkOutputMultiplexer.getImmediateOutput(partitionId);
+					WatermarkOutput deferredOutput =
+						watermarkOutputMultiplexer.getDeferredOutput(partitionId);
 
-					DisStreamPartitionStateWithPeriodicWatermarks<T, KPH> partitionState =
-							new DisStreamPartitionStateWithPeriodicWatermarks<>(
-									partitionEntry.getKey(),
-									kafkaHandle,
-									assignerInstance);
+					DisTopicPartitionStateWithWatermarkGenerator<T, KPH> partitionState =
+						new DisTopicPartitionStateWithWatermarkGenerator<>(
+							partitionEntry.getKey(),
+							kafkaHandle,
+							deserializedWatermarkStrategy.createTimestampAssigner(() -> consumerMetricGroup),
+							deserializedWatermarkStrategy.createWatermarkGenerator(() -> consumerMetricGroup),
+							immediateOutput,
+							deferredOutput);
 
 					partitionState.setOffset(partitionEntry.getValue());
 
@@ -546,26 +420,6 @@ public abstract class AbstractFetcher<T, KPH> {
 				return partitionStates;
 			}
 
-			case PUNCTUATED_WATERMARKS: {
-				for (Map.Entry<DisStreamPartition, Long> partitionEntry : partitionsToInitialOffsets.entrySet()) {
-					KPH kafkaHandle = createKafkaPartitionHandle(partitionEntry.getKey());
-
-					AssignerWithPunctuatedWatermarks<T> assignerInstance =
-							watermarksPunctuated.deserializeValue(userCodeClassLoader);
-
-					DisStreamPartitionStateWithPunctuatedWatermarks<T, KPH> partitionState =
-							new DisStreamPartitionStateWithPunctuatedWatermarks<>(
-									partitionEntry.getKey(),
-									kafkaHandle,
-									assignerInstance);
-
-					partitionState.setOffset(partitionEntry.getValue());
-
-					partitionStates.add(partitionState);
-				}
-
-				return partitionStates;
-			}
 			default:
 				// cannot happen, add this as a guard for the future
 				throw new RuntimeException();
@@ -573,15 +427,14 @@ public abstract class AbstractFetcher<T, KPH> {
 	}
 
 	/**
-	 * Shortcut variant of {@link #createPartitionStateHolders(Map, int, SerializedValue, SerializedValue, ClassLoader)}
+	 * Shortcut variant of {@link #createPartitionStateHolders(Map, int, SerializedValue, ClassLoader)}
 	 * that uses the same offset for all partitions when creating their state holders.
 	 */
-	private List<DisStreamPartitionState<KPH>> createPartitionStateHolders(
+	private List<DisStreamPartitionState<T, KPH>> createPartitionStateHolders(
 		List<DisStreamPartition> partitions,
 		long initialOffset,
 		int timestampWatermarkMode,
-		SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic,
-		SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated,
+		SerializedValue<WatermarkStrategy<T>> watermarkStrategy,
 		ClassLoader userCodeClassLoader) throws IOException, ClassNotFoundException {
 
 		Map<DisStreamPartition, Long> partitionsToInitialOffset = new HashMap<>(partitions.size());
@@ -590,11 +443,10 @@ public abstract class AbstractFetcher<T, KPH> {
 		}
 
 		return createPartitionStateHolders(
-				partitionsToInitialOffset,
-				timestampWatermarkMode,
-				watermarksPeriodic,
-				watermarksPunctuated,
-				userCodeClassLoader);
+			partitionsToInitialOffset,
+			timestampWatermarkMode,
+			watermarkStrategy,
+			userCodeClassLoader);
 	}
 
 	// ------------------------- Metrics ----------------------------------
@@ -611,9 +463,9 @@ public abstract class AbstractFetcher<T, KPH> {
 	 */
 	private void registerOffsetMetrics(
 			MetricGroup consumerMetricGroup,
-			List<DisStreamPartitionState<KPH>> partitionOffsetStates) {
+			List<DisStreamPartitionState<T, KPH>> partitionOffsetStates) {
 
-		for (DisStreamPartitionState<KPH> ktp : partitionOffsetStates) {
+		for (DisStreamPartitionState<T, KPH> ktp : partitionOffsetStates) {
 			MetricGroup topicPartitionGroup = consumerMetricGroup
 				.addGroup(OFFSETS_BY_TOPIC_METRICS_GROUP, ktp.getTopic())
 				.addGroup(OFFSETS_BY_PARTITION_METRICS_GROUP, Integer.toString(ktp.getPartition()));
@@ -626,7 +478,7 @@ public abstract class AbstractFetcher<T, KPH> {
 		}
 	}
 
-	private static String getLegacyOffsetsMetricsGaugeName(DisStreamPartitionState<?> ktp) {
+	private static String getLegacyOffsetsMetricsGaugeName(DisStreamPartitionState<?, ?> ktp) {
 		return ktp.getTopic() + "-" + ktp.getPartition();
 	}
 
@@ -644,10 +496,10 @@ public abstract class AbstractFetcher<T, KPH> {
 	private static class OffsetGauge implements Gauge<Long>
     {
 
-		private final DisStreamPartitionState<?> ktp;
+		private final DisStreamPartitionState<?, ?> ktp;
 		private final OffsetGaugeType gaugeType;
 
-		OffsetGauge(DisStreamPartitionState<?> ktp, OffsetGaugeType gaugeType) {
+		OffsetGauge(DisStreamPartitionState<?, ?> ktp, OffsetGaugeType gaugeType) {
 			this.ktp = ktp;
 			this.gaugeType = gaugeType;
 		}
@@ -670,31 +522,32 @@ public abstract class AbstractFetcher<T, KPH> {
 	 * The periodic watermark emitter. In its given interval, it checks all partitions for
 	 * the current event time watermark, and possibly emits the next watermark.
 	 */
-	private static class PeriodicWatermarkEmitter<KPH> implements ProcessingTimeCallback
+	private static class PeriodicWatermarkEmitter<T, KPH> implements ProcessingTimeCallback
     {
 
-		private final List<DisStreamPartitionState<KPH>> allPartitions;
+		private final Object checkpointLock;
 
-		private final SourceContext<?> emitter;
+		private final List<DisStreamPartitionState<T, KPH>> allPartitions;
+
+		private final WatermarkOutputMultiplexer watermarkOutputMultiplexer;
 
 		private final ProcessingTimeService timerService;
 
 		private final long interval;
 
-		private long lastWatermarkTimestamp;
-
 		//-------------------------------------------------
 
 		PeriodicWatermarkEmitter(
-				List<DisStreamPartitionState<KPH>> allPartitions,
-				SourceContext<?> emitter,
+				Object checkpointLock,
+				List<DisStreamPartitionState<T, KPH>> allPartitions,
+				WatermarkOutputMultiplexer watermarkOutputMultiplexer,
 				ProcessingTimeService timerService,
 				long autoWatermarkInterval) {
+			this.checkpointLock = checkpointLock;
 			this.allPartitions = checkNotNull(allPartitions);
-			this.emitter = checkNotNull(emitter);
+			this.watermarkOutputMultiplexer = watermarkOutputMultiplexer;
 			this.timerService = checkNotNull(timerService);
 			this.interval = autoWatermarkInterval;
-			this.lastWatermarkTimestamp = Long.MIN_VALUE;
 		}
 
 		//-------------------------------------------------
@@ -706,26 +559,12 @@ public abstract class AbstractFetcher<T, KPH> {
 		@Override
 		public void onProcessingTime(long timestamp) throws Exception {
 
-			long minAcrossAll = Long.MAX_VALUE;
-			boolean isEffectiveMinAggregation = false;
-			for (DisStreamPartitionState<?> state : allPartitions) {
-
-				// we access the current watermark for the periodic assigners under the state
-				// lock, to prevent concurrent modification to any internal variables
-				final long curr;
-				//noinspection SynchronizationOnLocalVariableOrMethodParameter
-				synchronized (state) {
-					curr = ((DisStreamPartitionStateWithPeriodicWatermarks<?, ?>) state).getCurrentWatermarkTimestamp();
+			synchronized (checkpointLock) {
+				for (DisStreamPartitionState<?, ?> state : allPartitions) {
+					state.onPeriodicEmit();
 				}
 
-				minAcrossAll = Math.min(minAcrossAll, curr);
-				isEffectiveMinAggregation = true;
-			}
-
-			// emit next watermark, if there is one
-			if (isEffectiveMinAggregation && minAcrossAll > lastWatermarkTimestamp) {
-				lastWatermarkTimestamp = minAcrossAll;
-				emitter.emitWatermark(new Watermark(minAcrossAll));
+				watermarkOutputMultiplexer.onPeriodicEmit();
 			}
 
 			// schedule the next watermark
