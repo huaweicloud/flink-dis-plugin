@@ -22,6 +22,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.OperatorStateStore;
@@ -55,8 +56,10 @@ import org.apache.flink.streaming.runtime.operators.util.AssignerWithPeriodicWat
 import org.apache.flink.streaming.runtime.operators.util.AssignerWithPunctuatedWatermarksAdapter;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.apache.flink.util.SerializedValue;
+import org.apache.flink.util.UserCodeClassLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.rmi.server.DeserializationChecker;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -644,7 +647,18 @@ public abstract class FlinkDisConsumerBase<T> extends RichParallelSourceFunction
 					getRuntimeContext().getIndexOfThisSubtask());
 			}
 
-			this.deserializer.open(() -> getRuntimeContext().getMetricGroup().addGroup("user"));
+			DeserializationSchema.InitializationContext initializationContext = new DeserializationSchema.InitializationContext() {
+				@Override
+				public MetricGroup getMetricGroup() {
+					return null;
+				}
+
+				@Override
+				public UserCodeClassLoader getUserCodeClassLoader() {
+					return null;
+				}
+			};
+			this.deserializer.open(initializationContext);
 		}
 	}
 
